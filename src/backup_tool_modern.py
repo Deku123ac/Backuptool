@@ -100,12 +100,13 @@ TEXT = {
         "empty_saved_configs": "Chưa có cấu hình đã lưu",
         "empty_saved_configs_body": "Sau khi bấm Kiểm tra, Cài lịch hoặc Backup ngay, cấu hình hợp lệ sẽ tự lưu ở đây.",
         "create_new_config": "Tạo cấu hình mới",
-        "load_config": "Tải cấu hình",
+        "load_config": "Chỉnh sửa cấu hình",
         "run_config": "Chạy cấu hình này",
         "delete_config": "Xóa cấu hình",
         "config_loaded": "Đã tải cấu hình",
         "config_deleted": "Đã xóa cấu hình",
         "choose_saved_config": "Hãy chọn một cấu hình đã lưu trước.",
+        "finish": "Hoàn tất",
     },
     "en": {
         "built_for": "",
@@ -188,12 +189,13 @@ TEXT = {
         "empty_saved_configs": "No saved configurations",
         "empty_saved_configs_body": "After Check, Install schedule, or Run backup, a valid configuration is saved here automatically.",
         "create_new_config": "Create new config",
-        "load_config": "Load config",
+        "load_config": "Edit config",
         "run_config": "Run this config",
         "delete_config": "Delete config",
         "config_loaded": "Configuration loaded",
         "config_deleted": "Configuration deleted",
         "choose_saved_config": "Choose a saved configuration first.",
+        "finish": "Finish",
     },
 }
 
@@ -1186,7 +1188,7 @@ class BackupToolApp(ctk.CTk):
         if index == 0:
             next_text = self.tr("create_new_config")
         elif index == len(self.step_tabs) - 1:
-            next_text = self.tr("check_config")
+            next_text = self.tr("finish")
         else:
             next_text = "Tiếp theo"
         self.next_step_button.configure(
@@ -1246,13 +1248,22 @@ class BackupToolApp(ctk.CTk):
     def next_step(self) -> None:
         index = self.active_step_index()
         if index >= len(self.step_tabs) - 1:
-            self.validate_only()
+            self.finish_configuration()
             return
         if self.current_step_ready():
             self.go_step(index + 1)
 
     def previous_step(self) -> None:
         self.go_step(self.active_step_index() - 1)
+
+    def finish_configuration(self) -> None:
+        if not self.current_step_ready():
+            return
+        if not self.save():
+            return
+        self.refresh_saved_configs()
+        self.status.set(self.tr("saved"))
+        self.go_step(0)
 
     def build_source_card(self, parent, row: int = 0) -> None:
         card = ctk.CTkFrame(parent, fg_color="#111827", corner_radius=22)
@@ -1330,7 +1341,7 @@ class BackupToolApp(ctk.CTk):
 
         actions = ctk.CTkFrame(card, fg_color="transparent")
         actions.grid(row=2, column=0, sticky="e", padx=18, pady=(0, 14))
-        self.load_saved_button = ctk.CTkButton(actions, text=self.tr("load_config"), command=self.load_selected_saved_config, width=128, height=38, fg_color="#334155", hover_color="#475569")
+        self.load_saved_button = ctk.CTkButton(actions, text=self.tr("load_config"), command=self.load_selected_saved_config, width=152, height=38, fg_color="#334155", hover_color="#475569")
         self.load_saved_button.pack(side="left", padx=(0, 10))
         self.run_saved_button = ctk.CTkButton(actions, text=self.tr("run_config"), command=self.run_selected_saved_config, width=152, height=38, fg_color="#22c55e", hover_color="#16a34a", text_color="#052e16")
         self.run_saved_button.pack(side="left", padx=(0, 10))
@@ -1406,10 +1417,18 @@ class BackupToolApp(ctk.CTk):
         else:
             days = "Mỗi ngày" if self.language.get() == "vi" else "Daily"
         detail = f"{frequency_label} | {config.time} | {days} | {len(config.sources)} nguồn"
-        ctk.CTkLabel(row, text=title, font=("Segoe UI", 13, "bold"), text_color="#f8fafc", anchor="w").grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 0))
-        ctk.CTkLabel(row, text=detail, font=("Segoe UI", 11), text_color="#bfdbfe", anchor="w").grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 0))
-        ctk.CTkLabel(row, text=f"Nơi lưu: {config.destination}", font=("Segoe UI", 11), text_color="#94a3b8", anchor="w").grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
-        ctk.CTkRadioButton(row, text="", variable=self.selected_saved_config, value=item.get("id", ""), width=24).grid(row=0, column=1, rowspan=3, padx=12)
+        title_label = ctk.CTkLabel(row, text=title, font=("Segoe UI", 13, "bold"), text_color="#f8fafc", anchor="w")
+        title_label.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 0))
+        detail_label = ctk.CTkLabel(row, text=detail, font=("Segoe UI", 11), text_color="#bfdbfe", anchor="w")
+        detail_label.grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 0))
+        dest_label = ctk.CTkLabel(row, text=f"Nơi lưu: {config.destination}", font=("Segoe UI", 11), text_color="#94a3b8", anchor="w")
+        dest_label.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
+        radio = ctk.CTkRadioButton(row, text="", variable=self.selected_saved_config, value=item.get("id", ""), width=24)
+        radio.grid(row=0, column=1, rowspan=3, padx=12)
+        config_id = item.get("id", "")
+        for widget in (row, title_label, detail_label, dest_label):
+            widget.bind("<Button-1>", lambda _event, value=config_id: self.selected_saved_config.set(value))
+            widget.bind("<Double-Button-1>", lambda _event, value=config_id: (self.selected_saved_config.set(value), self.load_selected_saved_config()))
 
     def selected_saved_item(self) -> dict | None:
         selected_id = self.selected_saved_config.get()
@@ -1455,7 +1474,7 @@ class BackupToolApp(ctk.CTk):
         self.apply_config_to_ui(config)
         save_config(config)
         self.status.set(self.tr("config_loaded"))
-        self.go_step(4)
+        self.go_step(1)
 
     def run_selected_saved_config(self) -> None:
         item = self.selected_saved_item()
