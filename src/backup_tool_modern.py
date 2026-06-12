@@ -77,6 +77,8 @@ TEXT = {
         "missing_sources_body": "Hãy thêm ít nhất 1 file hoặc folder cần backup.",
         "invalid_time": "Giờ không hợp lệ",
         "invalid_time_body": "Nhập giờ dạng HH:MM, ví dụ 21:00.",
+        "hour": "Giờ",
+        "minute": "Phút",
         "missing_days": "Thiếu ngày backup",
         "missing_days_body": "Hãy chọn ít nhất 1 ngày cho lịch tùy chọn.",
         "can_backup": "Có thể backup.",
@@ -149,6 +151,8 @@ TEXT = {
         "missing_sources_body": "Add at least one file or folder to backup.",
         "invalid_time": "Invalid time",
         "invalid_time_body": "Use HH:MM format, for example 21:00.",
+        "hour": "Hour",
+        "minute": "Minute",
         "missing_days": "Missing backup days",
         "missing_days_body": "Choose at least one day for custom schedule.",
         "can_backup": "Backup can run.",
@@ -511,6 +515,12 @@ def normalize_time(value: str) -> str | None:
     return f"{hour:02d}:{minute:02d}"
 
 
+def split_time(value: str) -> tuple[str, str]:
+    clean_time = normalize_time(value) or "21:00"
+    hour, minute = clean_time.split(":")
+    return hour, minute
+
+
 def scheduled_command() -> str:
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}" --run "{CONFIG_PATH}"'
@@ -571,6 +581,9 @@ class BackupToolApp(ctk.CTk):
         self.frequency = ctk.StringVar(value=self.config_data.frequency)
         self.destination = ctk.StringVar(value=self.config_data.destination)
         self.time = ctk.StringVar(value=self.config_data.time)
+        initial_hour, initial_minute = split_time(self.config_data.time)
+        self.hour = ctk.StringVar(value=initial_hour)
+        self.minute = ctk.StringVar(value=initial_minute)
         self.weekday = ctk.StringVar(value=self.config_data.weekday)
         selected_weekdays = self.config_data.weekdays or [self.config_data.weekday]
         self.weekday_vars = {day: ctk.BooleanVar(value=day in selected_weekdays) for day in WEEKDAY_LABELS}
@@ -591,6 +604,8 @@ class BackupToolApp(ctk.CTk):
         self.update_schedule_status()
         self.frequency.trace_add("write", lambda *_: self.update_schedule_summary())
         self.frequency.trace_add("write", lambda *_: self.update_config_summary())
+        self.hour.trace_add("write", lambda *_: self.sync_time_from_selectors())
+        self.minute.trace_add("write", lambda *_: self.sync_time_from_selectors())
         self.time.trace_add("write", lambda *_: self.update_schedule_summary())
         self.weekday.trace_add("write", lambda *_: self.update_schedule_summary())
         self.destination.trace_add("write", lambda *_: self.update_config_summary())
@@ -601,6 +616,13 @@ class BackupToolApp(ctk.CTk):
 
     def tr(self, key: str) -> str:
         return TEXT.get(self.language.get(), TEXT["vi"]).get(key, key)
+
+    def selected_time(self) -> str:
+        return f"{self.hour.get()}:{self.minute.get()}"
+
+    def sync_time_from_selectors(self) -> None:
+        self.time.set(self.selected_time())
+        self.update_schedule_summary()
 
     def change_language(self, value: str) -> None:
         self.language.set("en" if value == "English" else "vi")
@@ -773,8 +795,25 @@ class BackupToolApp(ctk.CTk):
             height=38,
         )
         self.frequency_switch.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self.time_entry = ctk.CTkEntry(row, textvariable=self.time, width=76, height=38, justify="center")
-        self.time_entry.grid(row=0, column=1, padx=(0, 10))
+        time_picker = ctk.CTkFrame(row, fg_color="transparent")
+        time_picker.grid(row=0, column=1, padx=(0, 10))
+        self.hour_menu = ctk.CTkOptionMenu(
+            time_picker,
+            values=[f"{hour:02d}" for hour in range(24)],
+            variable=self.hour,
+            width=74,
+            height=38,
+        )
+        self.hour_menu.pack(side="left")
+        ctk.CTkLabel(time_picker, text=":", font=("Segoe UI", 18, "bold"), text_color="#cbd5e1").pack(side="left", padx=6)
+        self.minute_menu = ctk.CTkOptionMenu(
+            time_picker,
+            values=[f"{minute:02d}" for minute in range(0, 60, 5)],
+            variable=self.minute,
+            width=74,
+            height=38,
+        )
+        self.minute_menu.pack(side="left")
         self.weekday_menu = ctk.CTkOptionMenu(row, values=list(WEEKDAY_LABELS.keys()), variable=self.weekday, width=100, height=38)
         self.weekday_menu.grid(row=0, column=2)
 
@@ -923,7 +962,7 @@ class BackupToolApp(ctk.CTk):
 
     def update_schedule_summary(self) -> None:
         selected_days = self.selected_weekdays()
-        self.next_backup.set(next_backup_text(self.frequency.get(), self.time.get(), self.weekday.get(), selected_days))
+        self.next_backup.set(next_backup_text(self.frequency.get(), self.selected_time(), self.weekday.get(), selected_days, self.language.get()))
 
     def update_config_summary(self) -> None:
         if not hasattr(self, "config_summary"):
@@ -956,7 +995,7 @@ class BackupToolApp(ctk.CTk):
             self.schedule_pill.configure(fg_color="#3f1d1d", text_color="#fecaca")
 
     def current_config(self) -> BackupConfig | None:
-        clean_time = normalize_time(self.time.get())
+        clean_time = normalize_time(self.selected_time())
         if not self.config_data.sources:
             messagebox.showwarning(self.tr("missing_sources"), self.tr("missing_sources_body"))
             return None
@@ -994,6 +1033,9 @@ class BackupToolApp(ctk.CTk):
         self.config_data = config
         save_config(config)
         self.time.set(config.time)
+        hour, minute = split_time(config.time)
+        self.hour.set(hour)
+        self.minute.set(minute)
         self.keep_latest.set(config.keep_latest)
         self.status.set(self.tr("saved"))
         self.update_schedule_summary()
