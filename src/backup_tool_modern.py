@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
@@ -60,6 +61,8 @@ TEXT = {
         "valid_config": "Cấu hình hợp lệ",
         "warning_config": "Cảnh báo cấu hình",
         "backup_running": "Đang backup...",
+        "backup_progress": "Tiến trình backup",
+        "progress_idle": "Chưa chạy backup",
         "backup_success": "Backup thành công",
         "backup_failed": "Backup thất bại",
         "source_added": "Đã thêm nguồn",
@@ -87,10 +90,22 @@ TEXT = {
         "verify_mode": "Chế độ verify",
         "backup_success_body": "Backup đã xong và đã verify.",
         "backup_failed_body": "Backup chưa hoàn tất. Mở log để xem chi tiết.",
+        "permission_hint": "Có file/folder Windows không cho đọc. Hãy đóng phần mềm đang dùng file đó, chạy app bằng quyền Administrator, hoặc bỏ file/folder đó khỏi danh sách backup.",
         "schedule_installed_body": "Windows sẽ tự backup theo lịch bạn chọn.",
         "admin_hint": "Hãy thử mở bằng quyền Administrator.",
         "schedule_removed_body": "Đã gỡ lịch backup tự động.",
         "schedule_missing_body": "Có thể lịch chưa tồn tại.",
+        "saved_configs": "Cấu hình đã lưu",
+        "saved_configs_hint": "Chọn cấu hình cũ để tải lại hoặc chạy ngay.",
+        "empty_saved_configs": "Chưa có cấu hình đã lưu",
+        "empty_saved_configs_body": "Sau khi bấm Kiểm tra, Cài lịch hoặc Backup ngay, cấu hình hợp lệ sẽ tự lưu ở đây.",
+        "create_new_config": "Tạo cấu hình mới",
+        "load_config": "Tải cấu hình",
+        "run_config": "Chạy cấu hình này",
+        "delete_config": "Xóa cấu hình",
+        "config_loaded": "Đã tải cấu hình",
+        "config_deleted": "Đã xóa cấu hình",
+        "choose_saved_config": "Hãy chọn một cấu hình đã lưu trước.",
     },
     "en": {
         "built_for": "",
@@ -134,6 +149,8 @@ TEXT = {
         "valid_config": "Configuration valid",
         "warning_config": "Configuration warning",
         "backup_running": "Backing up...",
+        "backup_progress": "Backup progress",
+        "progress_idle": "No backup running",
         "backup_success": "Backup complete",
         "backup_failed": "Backup failed",
         "source_added": "Source added",
@@ -161,10 +178,22 @@ TEXT = {
         "verify_mode": "Verify mode",
         "backup_success_body": "Backup is complete and verified.",
         "backup_failed_body": "Backup did not finish. Open the log for details.",
+        "permission_hint": "Windows blocked access to a file/folder. Close the app using it, run this tool as Administrator, or remove that file/folder from the backup list.",
         "schedule_installed_body": "Windows will run backups on your schedule.",
         "admin_hint": "Try running as Administrator.",
         "schedule_removed_body": "Automatic backup schedule was removed.",
         "schedule_missing_body": "The schedule may not exist.",
+        "saved_configs": "Saved configurations",
+        "saved_configs_hint": "Select an old configuration to load or run.",
+        "empty_saved_configs": "No saved configurations",
+        "empty_saved_configs_body": "After Check, Install schedule, or Run backup, a valid configuration is saved here automatically.",
+        "create_new_config": "Create new config",
+        "load_config": "Load config",
+        "run_config": "Run this config",
+        "delete_config": "Delete config",
+        "config_loaded": "Configuration loaded",
+        "config_deleted": "Configuration deleted",
+        "choose_saved_config": "Choose a saved configuration first.",
     },
 }
 
@@ -187,14 +216,16 @@ def app_dir() -> Path:
 BASE_DIR = app_dir()
 CONFIG_PATH = BASE_DIR / "backup_config.json"
 LOG_PATH = BASE_DIR / "backup_log.txt"
+SAVED_CONFIGS_PATH = BASE_DIR / "saved_backup_configs.json"
+MAX_SAVED_CONFIGS = 20
 WEEKDAY_LABELS = {
-    "MON": "Thu 2",
-    "TUE": "Thu 3",
-    "WED": "Thu 4",
-    "THU": "Thu 5",
-    "FRI": "Thu 6",
-    "SAT": "Thu 7",
-    "SUN": "Chu nhat",
+    "MON": "Thứ 2",
+    "TUE": "Thứ 3",
+    "WED": "Thứ 4",
+    "THU": "Thứ 5",
+    "FRI": "Thứ 6",
+    "SAT": "Thứ 7",
+    "SUN": "Chủ nhật",
 }
 FREQUENCY_LABELS = {
     "vi": {"daily": "Mỗi ngày", "weekly": "Mỗi tuần", "custom": "Tùy chọn ngày"},
@@ -235,13 +266,91 @@ def load_config(path: Path = CONFIG_PATH) -> BackupConfig:
 
 
 def save_config(config: BackupConfig, path: Path = CONFIG_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def config_signature(config: BackupConfig) -> str:
+    payload = {
+        "sources": list(config.sources),
+        "destination": config.destination,
+        "frequency": config.frequency,
+        "time": config.time,
+        "weekday": config.weekday,
+        "weekdays": list(config.weekdays or []),
+        "zip_backup": bool(config.zip_backup),
+        "keep_latest": int(config.keep_latest or 10),
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def config_display_name(config: BackupConfig) -> str:
+    if config.sources:
+        if len(config.sources) == 1:
+            source_name = Path(config.sources[0]).name or config.sources[0]
+        else:
+            source_name = f"{len(config.sources)} nguồn"
+    else:
+        source_name = "Chưa có nguồn"
+    destination_name = Path(config.destination).name or config.destination or "Chưa chọn nơi lưu"
+    return f"{source_name} -> {destination_name}"
+
+
+def load_saved_configs() -> list[dict]:
+    if not SAVED_CONFIGS_PATH.exists():
+        return []
+    try:
+        raw = json.loads(SAVED_CONFIGS_PATH.read_text(encoding="utf-8-sig"))
+        items = raw.get("items", raw if isinstance(raw, list) else [])
+        return [item for item in items if isinstance(item, dict) and item.get("config")]
+    except Exception:
+        return []
+
+
+def save_saved_configs(items: list[dict]) -> None:
+    SAVED_CONFIGS_PATH.write_text(
+        json.dumps({"items": items[:MAX_SAVED_CONFIGS]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def upsert_saved_config(config: BackupConfig) -> str:
+    items = load_saved_configs()
+    signature = config_signature(config)
+    now = datetime.now().isoformat(timespec="seconds")
+    entry = {
+        "id": signature,
+        "name": config_display_name(config),
+        "updated_at": now,
+        "config": asdict(config),
+    }
+    items = [item for item in items if item.get("id") != signature]
+    items.insert(0, entry)
+    save_saved_configs(items)
+    return signature
+
+
+def delete_saved_config(config_id: str) -> None:
+    save_saved_configs([item for item in load_saved_configs() if item.get("id") != config_id])
 
 
 def log(message: str) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with LOG_PATH.open("a", encoding="utf-8") as fh:
         fh.write(f"[{timestamp}] {message}\n")
+
+
+def last_error_from_log() -> str:
+    if not LOG_PATH.exists():
+        return ""
+    try:
+        lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return ""
+    for line in reversed(lines[-250:]):
+        if "ERROR:" in line or "Backup failed" in line:
+            return line
+    return ""
 
 
 def unique_path(path: Path) -> Path:
@@ -279,6 +388,49 @@ def source_size(source: Path) -> int:
     return sum(item.stat().st_size for item in source_files(source))
 
 
+def explain_access_error(path: Path, exc: Exception) -> str:
+    return (
+        f"Không có quyền đọc/ghi: {path}. "
+        "Hãy đóng phần mềm đang dùng file này, chạy app bằng quyền Administrator, "
+        "hoặc bỏ file/folder này khỏi danh sách backup. "
+        f"Chi tiết: {exc}"
+    )
+
+
+def assert_readable_file(path: Path) -> None:
+    try:
+        with path.open("rb") as fh:
+            fh.read(1)
+    except PermissionError as exc:
+        raise PermissionError(explain_access_error(path, exc)) from exc
+    except OSError as exc:
+        raise OSError(f"Không đọc được file: {path}. Chi tiết: {exc}") from exc
+
+
+def preflight_access_check(sources: list[Path], destination: Path) -> None:
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+        probe = unique_path(destination / ".backup_write_test.tmp")
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except Exception as exc:
+        raise RuntimeError(f"Không ghi được vào nơi lưu backup: {destination}. Chi tiết: {exc}") from exc
+
+    for source in sources:
+        if source.is_file():
+            assert_readable_file(source)
+            continue
+        try:
+            for folder in source_dirs(source):
+                folder.stat()
+            for file_path in source_files(source):
+                assert_readable_file(file_path)
+        except PermissionError:
+            raise
+        except OSError as exc:
+            raise RuntimeError(f"Không đọc được nguồn backup: {source}. Chi tiết: {exc}") from exc
+
+
 def format_bytes(value: int) -> str:
     size = float(value)
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -293,6 +445,11 @@ def config_stats(sources: list[str], destination: str, zip_backup: bool) -> tupl
     missing = [str(path) for path in paths if not path.exists()]
     if missing:
         return 0, 0, 0, f"Thieu nguon: {missing[0]}"
+    if destination and Path(destination).is_dir():
+        try:
+            preflight_access_check(paths, Path(destination))
+        except Exception as exc:
+            return 0, 0, 0, str(exc)
     try:
         files = []
         for path in paths:
@@ -342,33 +499,44 @@ def verify_dir_pair(source: Path, target: Path) -> dict:
     }
 
 
-def verify_source_copy(source: Path, target: Path) -> list[dict]:
+def verify_source_copy(source: Path, target: Path, progress_callback=None, progress_state: dict | None = None) -> list[dict]:
     entries = []
+    if progress_state is None:
+        progress_state = {"done": 0, "total": 1}
+
+    def tick(message: str) -> None:
+        progress_state["done"] += 1
+        if progress_callback:
+            progress_callback(progress_state["done"], progress_state["total"], message)
+
     if source.is_file():
         entries.append(verify_file_pair(source, target))
+        tick(source.name)
         return entries
 
     for source_dir in source_dirs(source):
         relative = Path("") if source_dir == source else source_dir.relative_to(source)
         target_dir = target / relative
         entries.append(verify_dir_pair(source_dir, target_dir))
+        tick(str(relative) if str(relative) else source.name)
 
     for source_file in source_files(source):
         relative = source_file.relative_to(source)
         target_file = target / relative
         entries.append(verify_file_pair(source_file, target_file))
+        tick(str(relative))
     return entries
 
 
-def copy_source(source: Path, target_root: Path) -> tuple[Path, list[dict]]:
+def copy_source(source: Path, target_root: Path, progress_callback=None, progress_state: dict | None = None) -> tuple[Path, list[dict]]:
     target = unique_path(target_root / source.name)
     if source.is_dir():
         shutil.copytree(source, target, copy_function=shutil.copy2)
-        entries = verify_source_copy(source, target)
+        entries = verify_source_copy(source, target, progress_callback, progress_state)
         log(f"OK folder verified: {source} -> {target} ({len(entries)} files)")
     else:
         shutil.copy2(source, target)
-        entries = verify_source_copy(source, target)
+        entries = verify_source_copy(source, target, progress_callback, progress_state)
         log(f"OK file verified: {source} -> {target}")
     return target, entries
 
@@ -377,7 +545,12 @@ def zip_folder(folder: Path, final_name: str) -> Path:
     zip_path = unique_path(folder.parent / f"{final_name}.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for item in folder.rglob("*"):
-            archive.write(item, Path(final_name) / item.relative_to(folder))
+            try:
+                archive.write(item, Path(final_name) / item.relative_to(folder))
+            except PermissionError as exc:
+                raise PermissionError(explain_access_error(item, exc)) from exc
+            except OSError as exc:
+                raise OSError(f"Không nén được file/folder: {item}. Chi tiết: {exc}") from exc
     with zipfile.ZipFile(zip_path, "r") as archive:
         bad_file = archive.testzip()
         if bad_file:
@@ -434,7 +607,7 @@ def fail_backup(temp_dir: Path, final_name: str) -> None:
         log(f"FAILED COPY RENAME ERROR: {exc}")
 
 
-def run_backup(config_path: Path = CONFIG_PATH) -> int:
+def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
     if not config_path.exists():
         log(f"ERROR: Khong tim thay cau hinh {config_path}")
         return 1
@@ -456,8 +629,16 @@ def run_backup(config_path: Path = CONFIG_PATH) -> int:
 
     try:
         total_bytes = sum(source_size(source) for source in sources)
+        total_items = sum((len(source_dirs(source)) + len(source_files(source))) if source.is_dir() else 1 for source in sources)
+        total_items = max(1, total_items)
     except Exception as exc:
         log(f"ERROR: Khong tinh duoc dung luong nguon backup -> {exc}")
+        return 1
+
+    try:
+        preflight_access_check(sources, destination)
+    except Exception as exc:
+        log(f"ERROR: Kiem tra quyen doc/ghi that bai -> {exc}")
         return 1
 
     free_bytes = shutil.disk_usage(destination).free
@@ -473,9 +654,12 @@ def run_backup(config_path: Path = CONFIG_PATH) -> int:
     log(f"START: Backup vao {backup_dir}")
 
     manifest_entries = []
+    progress_state = {"done": 0, "total": total_items}
+    if progress_callback:
+        progress_callback(0, total_items, "Starting")
     try:
         for source in sources:
-            target, entries = copy_source(source, backup_dir)
+            target, entries = copy_source(source, backup_dir, progress_callback, progress_state)
             manifest_entries.extend(entries)
             log(f"VERIFIED: {source} -> {target}")
         if not manifest_entries:
@@ -521,10 +705,10 @@ def split_time(value: str) -> tuple[str, str]:
     return hour, minute
 
 
-def scheduled_command() -> str:
+def scheduled_command(config_path: Path = CONFIG_PATH) -> str:
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}" --run "{CONFIG_PATH}"'
-    return f'"{sys.executable}" "{Path(__file__).resolve()}" --run "{CONFIG_PATH}"'
+        return f'"{sys.executable}" --run "{config_path}"'
+    return f'"{sys.executable}" "{Path(__file__).resolve()}" --run "{config_path}"'
 
 
 def task_is_installed() -> bool:
@@ -572,19 +756,25 @@ class BackupToolApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.title(PRODUCT_NAME)
-        self.geometry("1060x680")
-        self.minsize(980, 620)
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        window_width = min(1180, max(980, screen_width - 120))
+        window_height = min(680, max(600, screen_height - 160))
+        self.geometry(f"{window_width}x{window_height}")
+        self.minsize(920, 560)
         self.configure(fg_color="#0b1220")
 
         self.config_data = load_config()
         self.language = ctk.StringVar(value=self.config_data.language if self.config_data.language in TEXT else "vi")
         self.frequency = ctk.StringVar(value=self.config_data.frequency)
+        self.frequency_choice = ctk.StringVar(value="")
         self.destination = ctk.StringVar(value=self.config_data.destination)
         self.time = ctk.StringVar(value=self.config_data.time)
         initial_hour, initial_minute = split_time(self.config_data.time)
         self.hour = ctk.StringVar(value=initial_hour)
         self.minute = ctk.StringVar(value=initial_minute)
         self.weekday = ctk.StringVar(value=self.config_data.weekday)
+        self.weekday_choice = ctk.StringVar(value=WEEKDAY_LABELS.get(self.config_data.weekday, "Thứ 2"))
         selected_weekdays = self.config_data.weekdays or [self.config_data.weekday]
         self.weekday_vars = {day: ctk.BooleanVar(value=day in selected_weekdays) for day in WEEKDAY_LABELS}
         self.zip_backup = ctk.BooleanVar(value=self.config_data.zip_backup)
@@ -592,7 +782,15 @@ class BackupToolApp(ctk.CTk):
         self.status = ctk.StringVar(value=self.tr("ready"))
         self.schedule_state = ctk.StringVar(value="")
         self.next_backup = ctk.StringVar(value="")
-        self.config_summary = ctk.StringVar(value="Chua co cau hinh backup")
+        self.config_summary = ctk.StringVar(value="Chưa có cấu hình backup")
+        self.progress_text = ctk.StringVar(value=self.tr("progress_idle"))
+        self.selected_saved_config = ctk.StringVar(value="")
+        self.is_backing_up = False
+        self.lockable_controls = []
+        self.step_tabs = []
+        self.current_step_index = 0
+        self.syncing_weekdays = False
+        self.frequency_choice.set(self.frequency_label_for(self.frequency.get()))
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -607,7 +805,7 @@ class BackupToolApp(ctk.CTk):
         self.hour.trace_add("write", lambda *_: self.sync_time_from_selectors())
         self.minute.trace_add("write", lambda *_: self.sync_time_from_selectors())
         self.time.trace_add("write", lambda *_: self.update_schedule_summary())
-        self.weekday.trace_add("write", lambda *_: self.update_schedule_summary())
+        self.weekday.trace_add("write", lambda *_: self.on_weekday_changed())
         self.destination.trace_add("write", lambda *_: self.update_config_summary())
         self.zip_backup.trace_add("write", lambda *_: self.update_config_summary())
         self.keep_latest.trace_add("write", lambda *_: self.update_config_summary())
@@ -617,6 +815,34 @@ class BackupToolApp(ctk.CTk):
     def tr(self, key: str) -> str:
         return TEXT.get(self.language.get(), TEXT["vi"]).get(key, key)
 
+    def frequency_values(self) -> list[str]:
+        labels = FREQUENCY_LABELS.get(self.language.get(), FREQUENCY_LABELS["vi"])
+        return [labels["daily"], labels["weekly"], labels["custom"]]
+
+    def frequency_label_for(self, value: str) -> str:
+        labels = FREQUENCY_LABELS.get(self.language.get(), FREQUENCY_LABELS["vi"])
+        return labels.get(value, labels["daily"])
+
+    def frequency_value_from_label(self, label: str) -> str:
+        labels = FREQUENCY_LABELS.get(self.language.get(), FREQUENCY_LABELS["vi"])
+        for value, display in labels.items():
+            if display == label:
+                return value
+        return label if label in {"daily", "weekly", "custom"} else "daily"
+
+    def set_frequency_choice(self, label: str) -> None:
+        self.frequency.set(self.frequency_value_from_label(label))
+        self.update_weekday_state()
+
+    def weekday_value_from_label(self, label: str) -> str:
+        for value, display in WEEKDAY_LABELS.items():
+            if display == label:
+                return value
+        return label if label in WEEKDAY_LABELS else "MON"
+
+    def set_weekday_choice(self, label: str) -> None:
+        self.weekday.set(self.weekday_value_from_label(label))
+
     def selected_time(self) -> str:
         return f"{self.hour.get()}:{self.minute.get()}"
 
@@ -624,12 +850,63 @@ class BackupToolApp(ctk.CTk):
         self.time.set(self.selected_time())
         self.update_schedule_summary()
 
+    def adjust_time(self, part: str, delta: int) -> None:
+        if part == "hour":
+            value = (int(self.hour.get()) + delta) % 24
+            self.hour.set(f"{value:02d}")
+        else:
+            value = (int(self.minute.get()) + delta) % 60
+            value = value - (value % 5)
+            self.minute.set(f"{value:02d}")
+        self.sync_time_from_selectors()
+
+    def set_time_from_values(self, hour: int, minute: int) -> None:
+        minute = max(0, min(59, int(round(minute))))
+        self.hour.set(f"{hour % 24:02d}")
+        self.minute.set(f"{minute:02d}")
+        if hasattr(self, "hour_slider"):
+            self.hour_slider.set(int(self.hour.get()))
+        if hasattr(self, "minute_slider"):
+            self.minute_slider.set(int(self.minute.get()))
+        self.sync_time_from_selectors()
+
+    def set_time_preset(self, value: str) -> None:
+        hour, minute = value.split(":")
+        self.set_time_from_values(int(hour), int(minute))
+
+    def set_hour_from_slider(self, value: float) -> None:
+        self.hour.set(f"{int(round(value)):02d}")
+        self.sync_time_from_selectors()
+
+    def set_minute_from_slider(self, value: float) -> None:
+        minute = max(0, min(59, int(round(value))))
+        self.minute.set(f"{minute:02d}")
+        self.sync_time_from_selectors()
+
+    def compact_progress_message(self, message: str) -> str:
+        message = str(message or "").strip()
+        if not message:
+            return ""
+        leaf = Path(message).name
+        if leaf:
+            message = leaf
+        return message if len(message) <= 46 else f"...{message[-43:]}"
+
+    def on_weekday_changed(self) -> None:
+        label = WEEKDAY_LABELS.get(self.weekday.get(), WEEKDAY_LABELS["MON"])
+        if self.weekday_choice.get() != label:
+            self.weekday_choice.set(label)
+        self.sync_weekday_checks()
+        self.update_schedule_summary()
+
     def change_language(self, value: str) -> None:
         self.language.set("en" if value == "English" else "vi")
         self.config_data.language = self.language.get()
+        self.frequency_choice.set(self.frequency_label_for(self.frequency.get()))
         save_config(self.config_data)
         for child in self.winfo_children():
             child.destroy()
+        self.lockable_controls = []
         self.status.set(self.tr("ready"))
         self.build_sidebar()
         self.build_content()
@@ -639,18 +916,18 @@ class BackupToolApp(ctk.CTk):
         self.update_schedule_status()
 
     def build_sidebar(self) -> None:
-        sidebar = ctk.CTkFrame(self, width=280, corner_radius=0, fg_color="#111827")
+        sidebar = ctk.CTkFrame(self, width=250, corner_radius=0, fg_color="#111827")
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=24, pady=(28, 20))
-        logo = ctk.CTkFrame(brand, width=58, height=58, fg_color="#2563eb", corner_radius=18)
-        logo.pack(anchor="w", pady=(0, 14))
+        brand.pack(fill="x", padx=20, pady=(22, 14))
+        logo = ctk.CTkFrame(brand, width=48, height=48, fg_color="#2563eb", corner_radius=16)
+        logo.pack(anchor="w", pady=(0, 12))
         logo.pack_propagate(False)
-        ctk.CTkLabel(logo, text=owner_initials(OWNER_NAME), font=("Segoe UI", 22, "bold"), text_color="white").pack(expand=True)
-        ctk.CTkLabel(brand, text=PRODUCT_NAME, font=("Segoe UI", 28, "bold"), text_color="#f8fafc").pack(anchor="w")
-        ctk.CTkLabel(brand, text="Backup Pro", font=("Segoe UI", 28, "bold"), text_color="#60a5fa").pack(anchor="w")
+        ctk.CTkLabel(logo, text=owner_initials(OWNER_NAME), font=("Segoe UI", 18, "bold"), text_color="white").pack(expand=True)
+        ctk.CTkLabel(brand, text=PRODUCT_NAME, font=("Segoe UI", 24, "bold"), text_color="#f8fafc").pack(anchor="w")
+        ctk.CTkLabel(brand, text="Backup Pro", font=("Segoe UI", 24, "bold"), text_color="#60a5fa").pack(anchor="w")
         if self.tr("built_for"):
             ctk.CTkLabel(
                 brand,
@@ -662,27 +939,27 @@ class BackupToolApp(ctk.CTk):
             brand,
             text=self.tr("owner_note"),
             justify="left",
-            font=("Segoe UI", 13),
+            font=("Segoe UI", 12),
             text_color="#94a3b8",
-        ).pack(anchor="w", pady=(12, 0))
+        ).pack(anchor="w", pady=(10, 0))
 
         language_card = ctk.CTkFrame(sidebar, fg_color="#0f172a", corner_radius=18)
-        language_card.pack(fill="x", padx=20, pady=(0, 16))
-        ctk.CTkLabel(language_card, text=self.tr("lang"), font=("Segoe UI", 12, "bold"), text_color="#cbd5e1").pack(anchor="w", padx=16, pady=(12, 6))
+        language_card.pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkLabel(language_card, text=self.tr("lang"), font=("Segoe UI", 12, "bold"), text_color="#cbd5e1").pack(anchor="w", padx=14, pady=(10, 5))
         language_switch = ctk.CTkSegmentedButton(
             language_card,
             values=["Tiếng Việt", "English"],
             command=self.change_language,
             height=34,
         )
-        language_switch.pack(fill="x", padx=14, pady=(0, 14))
+        language_switch.pack(fill="x", padx=12, pady=(0, 12))
         language_switch.set("English" if self.language.get() == "en" else "Tiếng Việt")
 
         stat = ctk.CTkFrame(sidebar, fg_color="#0f172a", corner_radius=18)
-        stat.pack(fill="x", padx=20, pady=(6, 16))
-        self.source_count_label = ctk.CTkLabel(stat, text=f"0 {self.tr('source_count_suffix')}", font=("Segoe UI", 24, "bold"), text_color="#f8fafc")
-        self.source_count_label.pack(anchor="w", padx=18, pady=(16, 0))
-        ctk.CTkLabel(stat, text=self.tr("protected_sources"), font=("Segoe UI", 12), text_color="#94a3b8").pack(anchor="w", padx=18, pady=(0, 16))
+        stat.pack(fill="x", padx=16, pady=(4, 12))
+        self.source_count_label = ctk.CTkLabel(stat, text=f"0 {self.tr('source_count_suffix')}", font=("Segoe UI", 22, "bold"), text_color="#f8fafc")
+        self.source_count_label.pack(anchor="w", padx=16, pady=(12, 0))
+        ctk.CTkLabel(stat, text=self.tr("protected_sources"), font=("Segoe UI", 11), text_color="#94a3b8").pack(anchor="w", padx=16, pady=(0, 12))
 
         self.status_pill = ctk.CTkLabel(
             sidebar,
@@ -693,7 +970,7 @@ class BackupToolApp(ctk.CTk):
             text_color="white",
             font=("Segoe UI", 13, "bold"),
         )
-        self.status_pill.pack(fill="x", padx=20, pady=(0, 16))
+        self.status_pill.pack(fill="x", padx=16, pady=(0, 12))
 
         self.schedule_pill = ctk.CTkLabel(
             sidebar,
@@ -704,7 +981,7 @@ class BackupToolApp(ctk.CTk):
             text_color="#bfdbfe",
             font=("Segoe UI", 12, "bold"),
         )
-        self.schedule_pill.pack(fill="x", padx=20, pady=(0, 12))
+        self.schedule_pill.pack(fill="x", padx=16, pady=(0, 10))
 
         ctk.CTkButton(
             sidebar,
@@ -713,15 +990,16 @@ class BackupToolApp(ctk.CTk):
             height=42,
             fg_color="#1f2937",
             hover_color="#374151",
-        ).pack(fill="x", padx=20, pady=(0, 10))
-        ctk.CTkButton(
+        ).pack(fill="x", padx=16, pady=(0, 8))
+        self.sidebar_remove_schedule_button = ctk.CTkButton(
             sidebar,
             text=self.tr("remove_schedule"),
             command=self.remove_schedule,
             height=42,
             fg_color="#1f2937",
             hover_color="#374151",
-        ).pack(fill="x", padx=20)
+        )
+        self.sidebar_remove_schedule_button.pack(fill="x", padx=16)
 
         ctk.CTkLabel(
             sidebar,
@@ -729,23 +1007,22 @@ class BackupToolApp(ctk.CTk):
             justify="left",
             font=("Segoe UI", 11),
             text_color="#64748b",
-        ).pack(side="bottom", anchor="w", padx=24, pady=24)
+        ).pack(side="bottom", anchor="w", padx=20, pady=18)
 
     def build_content(self) -> None:
-        content = ctk.CTkFrame(self, fg_color="#0b1220", corner_radius=0)
-        content.grid(row=0, column=1, sticky="nsew", padx=26, pady=24)
+        content = ctk.CTkScrollableFrame(self, fg_color="#0b1220", corner_radius=0)
+        content.grid(row=0, column=1, sticky="nsew", padx=18, pady=16)
         content.grid_columnconfigure(0, weight=1)
-        content.grid_rowconfigure(2, weight=1)
 
         top = ctk.CTkFrame(content, fg_color="transparent")
         top.grid(row=0, column=0, sticky="ew")
-        ctk.CTkLabel(top, text=self.tr("main_title"), font=("Segoe UI", 28, "bold"), text_color="#f8fafc").pack(anchor="w")
+        ctk.CTkLabel(top, text=self.tr("main_title"), font=("Segoe UI", 24, "bold"), text_color="#f8fafc").pack(anchor="w")
         ctk.CTkLabel(
             top,
             text=self.tr("main_subtitle"),
-            font=("Segoe UI", 13),
+            font=("Segoe UI", 12),
             text_color="#94a3b8",
-        ).pack(anchor="w", pady=(4, 0))
+        ).pack(anchor="w", pady=(2, 0))
         ctk.CTkLabel(
             top,
             textvariable=self.config_summary,
@@ -754,79 +1031,140 @@ class BackupToolApp(ctk.CTk):
             fg_color="#111827",
             corner_radius=14,
             padx=14,
-            pady=8,
-        ).pack(anchor="w", fill="x", pady=(14, 0))
+            pady=6,
+        ).pack(anchor="w", fill="x", pady=(10, 0))
 
-        cards = ctk.CTkFrame(content, fg_color="transparent")
-        cards.grid(row=1, column=0, sticky="ew", pady=(22, 16))
-        cards.grid_columnconfigure((0, 1), weight=1)
+        self.step_tabs = ["Đã lưu", "Dữ liệu", "Nơi lưu", "Lịch", "Chạy backup"]
+        self.step_descriptions = [
+            "Tải lại cấu hình cũ",
+            "Chọn file/folder",
+            "Chọn nơi lưu an toàn",
+            "Đặt ngày và giờ",
+            "Kiểm tra, cài lịch, chạy",
+        ]
+        self.step_buttons = []
+        self.step_number_labels = []
+        self.step_title_labels = []
+        self.step_desc_labels = []
+        self.build_step_header(content)
 
-        self.build_destination_card(cards)
-        self.build_schedule_card(cards)
-        self.build_source_card(content)
-        self.build_action_bar(content)
+        self.step_content = ctk.CTkFrame(content, fg_color="transparent")
+        self.step_content.grid(row=2, column=0, sticky="ew", pady=(12, 10))
+        self.step_content.grid_columnconfigure(0, weight=1)
+        self.step_frames = []
+        for index in range(len(self.step_tabs)):
+            frame = ctk.CTkFrame(self.step_content, fg_color="#0b1220")
+            frame.grid_columnconfigure(0, weight=1)
+            self.step_frames.append(frame)
 
-    def build_destination_card(self, parent) -> None:
+        self.build_saved_configs_card(self.step_frames[0], row=0)
+        self.build_source_card(self.step_frames[1], row=0)
+        self.build_destination_card(self.step_frames[2], row=0)
+        self.build_schedule_card(self.step_frames[3], row=0)
+        self.build_action_bar(self.step_frames[4], row=0)
+
+        nav = ctk.CTkFrame(content, fg_color="transparent")
+        nav.grid(row=3, column=0, sticky="ew")
+        nav.grid_columnconfigure(0, weight=1)
+        self.back_step_button = ctk.CTkButton(nav, text="Quay lại", command=self.previous_step, width=120, height=38, fg_color="#334155", hover_color="#475569")
+        self.back_step_button.grid(row=0, column=1, padx=(0, 10))
+        self.next_step_button = ctk.CTkButton(nav, text="Tiếp theo", command=self.next_step, width=130, height=38)
+        self.next_step_button.grid(row=0, column=2)
+        self.lockable_controls.extend([self.back_step_button, self.next_step_button])
+        self.show_current_step()
+        self.update_step_buttons()
+
+    def build_step_header(self, parent) -> None:
+        stepper = ctk.CTkFrame(parent, fg_color="#0f172a", corner_radius=18)
+        stepper.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+        for index in range(len(self.step_tabs)):
+            stepper.grid_columnconfigure(index, weight=1, uniform="step")
+            card = ctk.CTkFrame(
+                stepper,
+                height=62,
+                fg_color="#111827",
+                corner_radius=14,
+            )
+            card.grid(row=0, column=index, sticky="ew", padx=(8 if index == 0 else 4, 8 if index == len(self.step_tabs) - 1 else 4), pady=8)
+            card.grid_columnconfigure(1, weight=1)
+            number = ctk.CTkLabel(card, text=str(index + 1), width=28, height=28, corner_radius=14, fg_color="#334155", text_color="#cbd5e1", font=("Segoe UI", 13, "bold"))
+            number.grid(row=0, column=0, rowspan=2, padx=(10, 8), pady=10)
+            title = ctk.CTkLabel(card, text=self.step_tabs[index], text_color="#e2e8f0", font=("Segoe UI", 13, "bold"), anchor="w")
+            title.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(9, 0))
+            desc = ctk.CTkLabel(card, text=self.step_descriptions[index], text_color="#94a3b8", font=("Segoe UI", 10), anchor="w")
+            desc.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=(0, 9))
+            self.step_buttons.append(card)
+            self.step_number_labels.append(number)
+            self.step_title_labels.append(title)
+            self.step_desc_labels.append(desc)
+
+    def build_destination_card(self, parent, row: int = 0) -> None:
         card = ctk.CTkFrame(parent, fg_color="#111827", corner_radius=22)
-        card.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        ctk.CTkLabel(card, text=self.tr("destination"), font=("Segoe UI", 16, "bold"), text_color="#f8fafc").pack(anchor="w", padx=18, pady=(16, 4))
+        card.grid(row=row, column=0, sticky="ew", padx=6, pady=6)
+        ctk.CTkLabel(card, text=self.tr("destination"), font=("Segoe UI", 16, "bold"), text_color="#f8fafc").pack(anchor="w", padx=18, pady=(14, 4))
         ctk.CTkLabel(card, text=self.tr("destination_hint"), font=("Segoe UI", 12), text_color="#94a3b8").pack(anchor="w", padx=18)
         row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", padx=18, pady=16)
+        row.pack(fill="x", padx=18, pady=14)
         row.grid_columnconfigure(0, weight=1)
         self.destination_entry = ctk.CTkEntry(row, textvariable=self.destination, height=42, placeholder_text=self.tr("destination_placeholder"))
         self.destination_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        ctk.CTkButton(row, text=self.tr("choose"), command=self.choose_destination, height=42, width=82).grid(row=0, column=1, padx=(0, 8))
-        ctk.CTkButton(row, text=self.tr("open"), command=self.open_destination, height=42, width=70, fg_color="#334155", hover_color="#475569").grid(row=0, column=2)
+        self.choose_dest_button = ctk.CTkButton(row, text=self.tr("choose"), command=self.choose_destination, height=42, width=82)
+        self.choose_dest_button.grid(row=0, column=1, padx=(0, 8))
+        self.open_dest_button = ctk.CTkButton(row, text=self.tr("open"), command=self.open_destination, height=42, width=70, fg_color="#334155", hover_color="#475569")
+        self.open_dest_button.grid(row=0, column=2)
+        self.lockable_controls.extend([self.destination_entry, self.choose_dest_button, self.open_dest_button])
 
-    def build_schedule_card(self, parent) -> None:
+    def build_schedule_card(self, parent, row: int = 0) -> None:
         card = ctk.CTkFrame(parent, fg_color="#111827", corner_radius=22)
-        card.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        ctk.CTkLabel(card, text=self.tr("schedule"), font=("Segoe UI", 16, "bold"), text_color="#f8fafc").pack(anchor="w", padx=18, pady=(16, 4))
+        card.grid(row=row, column=0, sticky="ew", padx=6, pady=6)
+        ctk.CTkLabel(card, text=self.tr("schedule"), font=("Segoe UI", 16, "bold"), text_color="#f8fafc").pack(anchor="w", padx=18, pady=(14, 4))
         ctk.CTkLabel(card, text=self.tr("schedule_hint"), font=("Segoe UI", 12), text_color="#94a3b8").pack(anchor="w", padx=18)
         row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", padx=18, pady=(16, 10))
+        row.pack(fill="x", padx=18, pady=(14, 8))
         row.grid_columnconfigure(0, weight=1)
         self.frequency_switch = ctk.CTkSegmentedButton(
             row,
-            values=["daily", "weekly", "custom"],
-            variable=self.frequency,
-            command=lambda _: self.update_weekday_state(),
+            values=self.frequency_values(),
+            variable=self.frequency_choice,
+            command=self.set_frequency_choice,
             height=38,
         )
         self.frequency_switch.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         time_picker = ctk.CTkFrame(row, fg_color="transparent")
-        time_picker.grid(row=0, column=1, padx=(0, 10))
-        self.hour_menu = ctk.CTkOptionMenu(
-            time_picker,
-            values=[f"{hour:02d}" for hour in range(24)],
-            variable=self.hour,
-            width=74,
-            height=38,
-        )
-        self.hour_menu.pack(side="left")
-        ctk.CTkLabel(time_picker, text=":", font=("Segoe UI", 18, "bold"), text_color="#cbd5e1").pack(side="left", padx=6)
-        self.minute_menu = ctk.CTkOptionMenu(
-            time_picker,
-            values=[f"{minute:02d}" for minute in range(0, 60, 5)],
-            variable=self.minute,
-            width=74,
-            height=38,
-        )
-        self.minute_menu.pack(side="left")
-        self.weekday_menu = ctk.CTkOptionMenu(row, values=list(WEEKDAY_LABELS.keys()), variable=self.weekday, width=100, height=38)
+        time_picker.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+        time_picker.grid_columnconfigure(1, weight=1)
+        time_picker.grid_columnconfigure(3, weight=1)
+        preset_row = ctk.CTkFrame(time_picker, fg_color="transparent")
+        preset_row.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+        for preset in ["08:00", "12:00", "18:00", "21:00"]:
+            button = ctk.CTkButton(preset_row, text=preset, width=72, height=32, fg_color="#1f2937", hover_color="#2563eb", command=lambda value=preset: self.set_time_preset(value))
+            button.pack(side="left", padx=(0, 8))
+            self.lockable_controls.append(button)
+        ctk.CTkLabel(time_picker, textvariable=self.hour, width=52, height=34, fg_color="#1f2937", corner_radius=10, font=("Segoe UI", 15, "bold")).grid(row=1, column=0, padx=(0, 10))
+        self.hour_slider = ctk.CTkSlider(time_picker, from_=0, to=23, number_of_steps=23, command=self.set_hour_from_slider)
+        self.hour_slider.grid(row=1, column=1, sticky="ew", padx=(0, 18))
+        self.hour_slider.set(int(self.hour.get()))
+        ctk.CTkLabel(time_picker, textvariable=self.minute, width=52, height=34, fg_color="#1f2937", corner_radius=10, font=("Segoe UI", 15, "bold")).grid(row=1, column=2, padx=(0, 10))
+        self.minute_slider = ctk.CTkSlider(time_picker, from_=0, to=59, number_of_steps=59, command=self.set_minute_from_slider)
+        self.minute_slider.grid(row=1, column=3, sticky="ew")
+        self.minute_slider.set(int(self.minute.get()))
+        self.lockable_controls.extend([self.frequency_switch, self.hour_slider, self.minute_slider])
+        self.weekday_menu = ctk.CTkOptionMenu(row, values=list(WEEKDAY_LABELS.values()), variable=self.weekday_choice, command=self.set_weekday_choice, width=120, height=38)
         self.weekday_menu.grid(row=0, column=2)
+        self.lockable_controls.append(self.weekday_menu)
 
         self.custom_days_frame = ctk.CTkFrame(card, fg_color="transparent")
         self.custom_days_frame.pack(fill="x", padx=18, pady=(0, 10))
         for index, day in enumerate(WEEKDAY_LABELS):
-            ctk.CTkCheckBox(
+            checkbox = ctk.CTkCheckBox(
                 self.custom_days_frame,
-                text=day,
+                text=WEEKDAY_LABELS[day],
                 variable=self.weekday_vars[day],
-                width=68,
+                width=88,
                 command=self.update_schedule_summary,
-            ).grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 8), pady=4)
+            )
+            checkbox.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 8), pady=4)
+            self.lockable_controls.append(checkbox)
 
         self.next_backup_label = ctk.CTkLabel(
             card,
@@ -837,46 +1175,169 @@ class BackupToolApp(ctk.CTk):
         )
         self.next_backup_label.pack(fill="x", padx=18, pady=(0, 12))
 
-    def build_source_card(self, parent) -> None:
+    def active_step_index(self) -> int:
+        return self.current_step_index
+
+    def update_step_buttons(self) -> None:
+        if not hasattr(self, "back_step_button") or not hasattr(self, "next_step_button"):
+            return
+        index = self.active_step_index()
+        self.back_step_button.configure(state="normal" if index > 0 else "disabled")
+        if index == 0:
+            next_text = self.tr("create_new_config")
+        elif index == len(self.step_tabs) - 1:
+            next_text = self.tr("check_config")
+        else:
+            next_text = "Tiếp theo"
+        self.next_step_button.configure(
+            text=next_text,
+            state="disabled" if self.is_backing_up else "normal",
+        )
+        if hasattr(self, "step_buttons"):
+            for step_index, button in enumerate(self.step_buttons):
+                active = step_index == index
+                complete = step_index < index
+                button.configure(
+                    fg_color="#1d4ed8" if active else "#102033" if complete else "#111827",
+                )
+                self.step_number_labels[step_index].configure(
+                    fg_color="#f8fafc" if active else "#22c55e" if complete else "#334155",
+                    text_color="#1d4ed8" if active else "#052e16" if complete else "#cbd5e1",
+                    text="✓" if complete else str(step_index + 1),
+                )
+                self.step_title_labels[step_index].configure(text_color="#ffffff" if active else "#dbeafe" if complete else "#e2e8f0")
+                self.step_desc_labels[step_index].configure(text_color="#dbeafe" if active else "#93c5fd" if complete else "#94a3b8")
+
+    def show_current_step(self) -> None:
+        if hasattr(self, "step_frames") and self.step_frames:
+            for index, frame in enumerate(self.step_frames):
+                if index == self.current_step_index:
+                    frame.grid(row=0, column=0, sticky="ew")
+                    frame.tkraise()
+                else:
+                    frame.grid_remove()
+        self.update_step_buttons()
+
+    def go_step(self, index: int) -> None:
+        if not self.step_tabs:
+            return
+        self.current_step_index = max(0, min(index, len(self.step_tabs) - 1))
+        self.show_current_step()
+
+    def current_step_ready(self) -> bool:
+        index = self.active_step_index()
+        if index == 1 and not self.config_data.sources:
+            messagebox.showwarning(self.tr("missing_sources"), self.tr("missing_sources_body"))
+            return False
+        if index == 2:
+            destination = self.destination.get().strip()
+            if not destination or not Path(destination).is_dir():
+                messagebox.showwarning(self.tr("invalid_destination"), self.tr("choose_destination_first"))
+                return False
+        if index == 3:
+            if not normalize_time(self.selected_time()):
+                messagebox.showwarning(self.tr("invalid_time"), self.tr("invalid_time_body"))
+                return False
+            if self.frequency.get() == "custom" and not self.selected_weekdays():
+                messagebox.showwarning(self.tr("missing_days"), self.tr("missing_days_body"))
+                return False
+        return True
+
+    def next_step(self) -> None:
+        index = self.active_step_index()
+        if index >= len(self.step_tabs) - 1:
+            self.validate_only()
+            return
+        if self.current_step_ready():
+            self.go_step(index + 1)
+
+    def previous_step(self) -> None:
+        self.go_step(self.active_step_index() - 1)
+
+    def build_source_card(self, parent, row: int = 0) -> None:
         card = ctk.CTkFrame(parent, fg_color="#111827", corner_radius=22)
-        card.grid(row=2, column=0, sticky="nsew")
+        card.grid(row=row, column=0, sticky="ew", padx=6, pady=6)
         card.grid_columnconfigure(0, weight=1)
-        card.grid_rowconfigure(1, weight=1)
 
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 10))
+        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 8))
         header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(header, text=self.tr("sources"), font=("Segoe UI", 17, "bold"), text_color="#f8fafc").grid(row=0, column=0, sticky="w")
-        ctk.CTkButton(header, text=self.tr("add_file"), command=self.add_file, width=110, height=38).grid(row=0, column=1, padx=(8, 0))
-        ctk.CTkButton(header, text=self.tr("add_folder"), command=self.add_folder, width=120, height=38).grid(row=0, column=2, padx=(8, 0))
+        self.add_file_button = ctk.CTkButton(header, text=self.tr("add_file"), command=self.add_file, width=110, height=38)
+        self.add_file_button.grid(row=0, column=1, padx=(8, 0))
+        self.add_folder_button = ctk.CTkButton(header, text=self.tr("add_folder"), command=self.add_folder, width=120, height=38)
+        self.add_folder_button.grid(row=0, column=2, padx=(8, 0))
+        self.lockable_controls.extend([self.add_file_button, self.add_folder_button])
 
-        self.source_box = ctk.CTkScrollableFrame(card, fg_color="#0f172a", corner_radius=16)
-        self.source_box.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 16))
+        self.source_box = ctk.CTkScrollableFrame(card, fg_color="#0f172a", corner_radius=16, height=185)
+        self.source_box.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
 
         footer = ctk.CTkFrame(card, fg_color="transparent")
-        footer.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 16))
-        ctk.CTkButton(footer, text=self.tr("remove_selected"), command=self.remove_selected, height=36, fg_color="#334155", hover_color="#475569").pack(side="left")
-        ctk.CTkButton(footer, text=self.tr("clear_all"), command=self.clear_sources, height=36, fg_color="#334155", hover_color="#475569").pack(side="left", padx=10)
+        footer.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 14))
+        self.remove_source_button = ctk.CTkButton(footer, text=self.tr("remove_selected"), command=self.remove_selected, height=36, fg_color="#334155", hover_color="#475569")
+        self.remove_source_button.pack(side="left")
+        self.clear_sources_button = ctk.CTkButton(footer, text=self.tr("clear_all"), command=self.clear_sources, height=36, fg_color="#334155", hover_color="#475569")
+        self.clear_sources_button.pack(side="left", padx=10)
+        self.lockable_controls.extend([self.remove_source_button, self.clear_sources_button])
         self.selected_source = ctk.StringVar(value="")
 
-    def build_action_bar(self, parent) -> None:
+    def build_action_bar(self, parent, row: int = 0) -> None:
         bar = ctk.CTkFrame(parent, fg_color="#111827", corner_radius=22)
-        bar.grid(row=3, column=0, sticky="ew", pady=(16, 0))
+        bar.grid(row=row, column=0, sticky="ew", padx=6, pady=6)
         bar.grid_columnconfigure(0, weight=1)
 
         left = ctk.CTkFrame(bar, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="w", padx=18, pady=16)
-        ctk.CTkSwitch(left, text=self.tr("zip"), variable=self.zip_backup).pack(side="left", padx=(0, 18))
+        left.grid(row=0, column=0, sticky="w", padx=18, pady=(16, 10))
+        self.zip_switch = ctk.CTkSwitch(left, text=self.tr("zip"), variable=self.zip_backup)
+        self.zip_switch.pack(side="left", padx=(0, 18))
         ctk.CTkLabel(left, text=self.tr("keep"), text_color="#94a3b8").pack(side="left")
-        ctk.CTkEntry(left, textvariable=self.keep_latest, width=58, height=34, justify="center").pack(side="left", padx=8)
+        self.keep_entry = ctk.CTkEntry(left, textvariable=self.keep_latest, width=58, height=34, justify="center")
+        self.keep_entry.pack(side="left", padx=8)
         ctk.CTkLabel(left, text=self.tr("latest"), text_color="#94a3b8").pack(side="left")
+        self.lockable_controls.extend([self.zip_switch, self.keep_entry])
+
+        progress_area = ctk.CTkFrame(bar, fg_color="transparent")
+        progress_area.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
+        progress_area.grid_columnconfigure(0, weight=1)
+        self.progress_bar = ctk.CTkProgressBar(progress_area, height=12, mode="determinate")
+        self.progress_bar.grid(row=0, column=0, sticky="ew", padx=(0, 12))
+        self.progress_bar.set(0)
+        ctk.CTkLabel(progress_area, textvariable=self.progress_text, width=180, anchor="e", text_color="#bfdbfe", font=("Segoe UI", 12, "bold")).grid(row=0, column=1, sticky="e")
 
         right = ctk.CTkFrame(bar, fg_color="transparent")
-        right.grid(row=0, column=1, sticky="e", padx=18, pady=16)
-        ctk.CTkButton(right, text=self.tr("check"), command=self.validate_only, width=96, height=44, fg_color="#334155", hover_color="#475569").pack(side="left", padx=(0, 10))
-        ctk.CTkButton(right, text=self.tr("save"), command=self.save, width=80, height=44, fg_color="#334155", hover_color="#475569").pack(side="left", padx=(0, 10))
-        ctk.CTkButton(right, text=self.tr("install_schedule"), command=self.install_schedule, width=126, height=44, fg_color="#2563eb", hover_color="#1d4ed8").pack(side="left", padx=(0, 10))
-        ctk.CTkButton(right, text=self.tr("run_now"), command=self.run_now, width=146, height=44, fg_color="#22c55e", hover_color="#16a34a", text_color="#052e16").pack(side="left")
+        right.grid(row=2, column=0, sticky="e", padx=18, pady=(4, 16))
+        self.check_button = ctk.CTkButton(right, text=self.tr("check"), command=self.validate_only, width=96, height=44, fg_color="#334155", hover_color="#475569")
+        self.check_button.pack(side="left", padx=(0, 10))
+        self.schedule_button = ctk.CTkButton(right, text=self.tr("install_schedule"), command=self.install_schedule, width=126, height=44, fg_color="#2563eb", hover_color="#1d4ed8")
+        self.schedule_button.pack(side="left", padx=(0, 10))
+        self.backup_button = ctk.CTkButton(right, text=self.tr("run_now"), command=self.run_now, width=146, height=44, fg_color="#22c55e", hover_color="#16a34a", text_color="#052e16")
+        self.backup_button.pack(side="left")
+        self.lockable_controls.extend([self.check_button, self.schedule_button, self.backup_button])
+
+    def build_saved_configs_card(self, parent, row: int = 0) -> None:
+        card = ctk.CTkFrame(parent, fg_color="#111827", corner_radius=22)
+        card.grid(row=row, column=0, sticky="ew", padx=6, pady=6)
+        card.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 8))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, text=self.tr("saved_configs"), font=("Segoe UI", 17, "bold"), text_color="#f8fafc").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(header, text=self.tr("saved_configs_hint"), font=("Segoe UI", 12), text_color="#94a3b8").grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        self.saved_configs_box = ctk.CTkScrollableFrame(card, fg_color="#0f172a", corner_radius=16, height=250)
+        self.saved_configs_box.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.grid(row=2, column=0, sticky="e", padx=18, pady=(0, 14))
+        self.load_saved_button = ctk.CTkButton(actions, text=self.tr("load_config"), command=self.load_selected_saved_config, width=128, height=38, fg_color="#334155", hover_color="#475569")
+        self.load_saved_button.pack(side="left", padx=(0, 10))
+        self.run_saved_button = ctk.CTkButton(actions, text=self.tr("run_config"), command=self.run_selected_saved_config, width=152, height=38, fg_color="#22c55e", hover_color="#16a34a", text_color="#052e16")
+        self.run_saved_button.pack(side="left", padx=(0, 10))
+        self.delete_saved_button = ctk.CTkButton(actions, text=self.tr("delete_config"), command=self.delete_selected_saved_config, width=118, height=38, fg_color="#7f1d1d", hover_color="#991b1b")
+        self.delete_saved_button.pack(side="left")
+        self.lockable_controls.extend([self.load_saved_button, self.run_saved_button, self.delete_saved_button])
+        self.refresh_saved_configs()
 
     def refresh_sources(self) -> None:
         for child in self.source_box.winfo_children():
@@ -907,6 +1368,116 @@ class BackupToolApp(ctk.CTk):
         ctk.CTkLabel(row, text=Path(source).name or source, font=("Segoe UI", 13, "bold"), text_color="#f8fafc", anchor="w").grid(row=0, column=1, sticky="ew", pady=(10, 0))
         ctk.CTkLabel(row, text=source, font=("Segoe UI", 11), text_color="#94a3b8", anchor="w").grid(row=1, column=1, sticky="ew", pady=(0, 10))
         ctk.CTkRadioButton(row, text="", variable=self.selected_source, value=source, width=24).grid(row=0, column=2, rowspan=2, padx=12)
+
+    def refresh_saved_configs(self) -> None:
+        if not hasattr(self, "saved_configs_box"):
+            return
+        for child in self.saved_configs_box.winfo_children():
+            child.destroy()
+
+        items = load_saved_configs()
+        valid_ids = {item.get("id") for item in items}
+        if self.selected_saved_config.get() not in valid_ids:
+            self.selected_saved_config.set("")
+
+        if not items:
+            empty = ctk.CTkFrame(self.saved_configs_box, fg_color="transparent")
+            empty.pack(fill="both", expand=True, padx=18, pady=28)
+            ctk.CTkLabel(empty, text=self.tr("empty_saved_configs"), font=("Segoe UI", 18, "bold"), text_color="#e2e8f0").pack()
+            ctk.CTkLabel(empty, text=self.tr("empty_saved_configs_body"), font=("Segoe UI", 13), text_color="#64748b", wraplength=720).pack(pady=(6, 0))
+            ctk.CTkButton(empty, text=self.tr("create_new_config"), command=lambda: self.go_step(1), width=180, height=40).pack(pady=(18, 0))
+            return
+
+        for item in items:
+            self.add_saved_config_row(item)
+
+    def add_saved_config_row(self, item: dict) -> None:
+        raw_config = item.get("config") or {}
+        config = BackupConfig(**{**asdict(default_config()), **raw_config})
+        row = ctk.CTkFrame(self.saved_configs_box, fg_color="#111827", corner_radius=14)
+        row.pack(fill="x", padx=10, pady=6)
+        row.grid_columnconfigure(0, weight=1)
+        title = item.get("name") or config_display_name(config)
+        frequency_label = FREQUENCY_LABELS.get(self.language.get(), FREQUENCY_LABELS["vi"]).get(config.frequency, config.frequency)
+        if config.frequency == "custom":
+            days = ", ".join(WEEKDAY_LABELS.get(day, day) for day in (config.weekdays or []))
+        elif config.frequency == "weekly":
+            days = WEEKDAY_LABELS.get(config.weekday, config.weekday)
+        else:
+            days = "Mỗi ngày" if self.language.get() == "vi" else "Daily"
+        detail = f"{frequency_label} | {config.time} | {days} | {len(config.sources)} nguồn"
+        ctk.CTkLabel(row, text=title, font=("Segoe UI", 13, "bold"), text_color="#f8fafc", anchor="w").grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 0))
+        ctk.CTkLabel(row, text=detail, font=("Segoe UI", 11), text_color="#bfdbfe", anchor="w").grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 0))
+        ctk.CTkLabel(row, text=f"Nơi lưu: {config.destination}", font=("Segoe UI", 11), text_color="#94a3b8", anchor="w").grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
+        ctk.CTkRadioButton(row, text="", variable=self.selected_saved_config, value=item.get("id", ""), width=24).grid(row=0, column=1, rowspan=3, padx=12)
+
+    def selected_saved_item(self) -> dict | None:
+        selected_id = self.selected_saved_config.get()
+        if not selected_id:
+            messagebox.showwarning(self.tr("saved_configs"), self.tr("choose_saved_config"))
+            return None
+        for item in load_saved_configs():
+            if item.get("id") == selected_id:
+                return item
+        messagebox.showwarning(self.tr("saved_configs"), self.tr("choose_saved_config"))
+        return None
+
+    def apply_config_to_ui(self, config: BackupConfig) -> None:
+        self.config_data = config
+        self.destination.set(config.destination)
+        self.frequency.set(config.frequency)
+        self.frequency_choice.set(self.frequency_label_for(config.frequency))
+        hour, minute = split_time(config.time)
+        self.hour.set(hour)
+        self.minute.set(minute)
+        self.time.set(config.time)
+        self.weekday.set(config.weekday or "MON")
+        self.weekday_choice.set(WEEKDAY_LABELS.get(config.weekday or "MON", WEEKDAY_LABELS["MON"]))
+        selected_weekdays = config.weekdays or [config.weekday or "MON"]
+        for day, var in self.weekday_vars.items():
+            var.set(day in selected_weekdays)
+        self.zip_backup.set(bool(config.zip_backup))
+        self.keep_latest.set(max(1, int(config.keep_latest or 10)))
+        if hasattr(self, "hour_slider"):
+            self.hour_slider.set(int(hour))
+        if hasattr(self, "minute_slider"):
+            self.minute_slider.set(int(minute))
+        self.refresh_sources()
+        self.update_weekday_state()
+        self.update_config_summary()
+
+    def load_selected_saved_config(self) -> None:
+        item = self.selected_saved_item()
+        if not item:
+            return
+        config = BackupConfig(**{**asdict(default_config()), **(item.get("config") or {})})
+        config.language = self.language.get()
+        self.apply_config_to_ui(config)
+        save_config(config)
+        self.status.set(self.tr("config_loaded"))
+        self.go_step(4)
+
+    def run_selected_saved_config(self) -> None:
+        item = self.selected_saved_item()
+        if not item:
+            return
+        config = BackupConfig(**{**asdict(default_config()), **(item.get("config") or {})})
+        config.language = self.language.get()
+        self.apply_config_to_ui(config)
+        save_config(config)
+        self.go_step(4)
+        self.run_now()
+
+    def delete_selected_saved_config(self) -> None:
+        item = self.selected_saved_item()
+        if not item:
+            return
+        if not messagebox.askyesno(self.tr("delete_config"), self.tr("delete_config") + "?"):
+            return
+        delete_saved_config(item.get("id", ""))
+        self.selected_saved_config.set("")
+        self.refresh_saved_configs()
+        self.status.set(self.tr("config_deleted"))
 
     def add_file(self) -> None:
         for file_path in filedialog.askopenfilenames(title=self.tr("add_file")):
@@ -950,6 +1521,12 @@ class BackupToolApp(ctk.CTk):
 
     def update_weekday_state(self) -> None:
         frequency = self.frequency.get()
+        if self.frequency_choice.get() != self.frequency_label_for(frequency):
+            self.frequency_choice.set(self.frequency_label_for(frequency))
+        label = WEEKDAY_LABELS.get(self.weekday.get(), WEEKDAY_LABELS["MON"])
+        if self.weekday_choice.get() != label:
+            self.weekday_choice.set(label)
+        self.sync_weekday_checks()
         state = "normal" if frequency == "weekly" else "disabled"
         self.weekday_menu.configure(state=state)
         custom_state = "normal" if frequency == "custom" else "disabled"
@@ -957,7 +1534,25 @@ class BackupToolApp(ctk.CTk):
             child.configure(state=custom_state)
         self.update_schedule_summary()
 
+    def sync_weekday_checks(self) -> None:
+        if self.syncing_weekdays:
+            return
+        frequency = self.frequency.get()
+        if frequency == "custom":
+            return
+        self.syncing_weekdays = True
+        try:
+            checked_day = self.weekday.get() if frequency == "weekly" else ""
+            for day, var in self.weekday_vars.items():
+                var.set(day == checked_day)
+        finally:
+            self.syncing_weekdays = False
+
     def selected_weekdays(self) -> list[str]:
+        if self.frequency.get() == "weekly":
+            return [self.weekday.get() or "MON"]
+        if self.frequency.get() == "daily":
+            return []
         return [day for day, var in self.weekday_vars.items() if var.get()]
 
     def update_schedule_summary(self) -> None:
@@ -987,12 +1582,15 @@ class BackupToolApp(ctk.CTk):
         self.config_summary.set(summary)
 
     def update_schedule_status(self) -> None:
-        if task_is_installed():
+        installed = task_is_installed()
+        if installed:
             self.schedule_state.set(self.tr("schedule_installed"))
             self.schedule_pill.configure(fg_color="#064e3b", text_color="#bbf7d0")
         else:
             self.schedule_state.set(self.tr("schedule_not_installed"))
             self.schedule_pill.configure(fg_color="#3f1d1d", text_color="#fecaca")
+        if hasattr(self, "sidebar_remove_schedule_button"):
+            self.sidebar_remove_schedule_button.configure(state="normal" if installed else "disabled")
 
     def current_config(self) -> BackupConfig | None:
         clean_time = normalize_time(self.selected_time())
@@ -1032,6 +1630,8 @@ class BackupToolApp(ctk.CTk):
             return False
         self.config_data = config
         save_config(config)
+        self.selected_saved_config.set(upsert_saved_config(config))
+        self.refresh_saved_configs()
         self.time.set(config.time)
         hour, minute = split_time(config.time)
         self.hour.set(hour)
@@ -1047,37 +1647,80 @@ class BackupToolApp(ctk.CTk):
         if not config:
             return
         file_count, total_bytes, free_bytes, warning = config_stats(config.sources, config.destination, config.zip_backup)
+        files_label = "Files" if self.language.get() == "en" else "Số file"
         if warning:
             self.status.set(self.tr("warning_config"))
             messagebox.showwarning(
                 self.tr("warning_config"),
-                f"{warning}\n\nFiles: {file_count}\n{self.tr('source_size')}: {format_bytes(total_bytes)}\n{self.tr('destination_free')}: {format_bytes(free_bytes)}",
+                f"{warning}\n\n{files_label}: {file_count}\n{self.tr('source_size')}: {format_bytes(total_bytes)}\n{self.tr('destination_free')}: {format_bytes(free_bytes)}",
             )
             return
         self.status.set(self.tr("valid_config"))
         messagebox.showinfo(
             self.tr("valid_config"),
-            f"{self.tr('can_backup')}\n\nFiles: {file_count}\n{self.tr('source_size')}: {format_bytes(total_bytes)}\n{self.tr('destination_free')}: {format_bytes(free_bytes)}\n{self.tr('verify_mode')}: SHA-256",
+            f"{self.tr('can_backup')}\n\n{files_label}: {file_count}\n{self.tr('source_size')}: {format_bytes(total_bytes)}\n{self.tr('destination_free')}: {format_bytes(free_bytes)}\n{self.tr('verify_mode')}: SHA-256",
         )
 
-    def run_now(self) -> None:
-        if not self.save():
-            return
-        self.status.set(self.tr("backup_running"))
-        self.update_idletasks()
-        result = run_backup(CONFIG_PATH)
+    def set_controls_state(self, state: str) -> None:
+        for control in self.lockable_controls:
+            try:
+                control.configure(state=state)
+            except Exception:
+                pass
+
+    def update_progress(self, done: int, total: int, message: str = "") -> None:
+        total = max(1, total)
+        percent = min(100, int((done / total) * 100))
+
+        def apply_update() -> None:
+            if hasattr(self, "progress_bar"):
+                self.progress_bar.set(percent / 100)
+            short_message = self.compact_progress_message(message)
+            self.progress_text.set(f"{percent}% - {short_message}" if short_message else f"{percent}%")
+
+        self.after(0, apply_update)
+
+    def finish_backup(self, result: int) -> None:
+        self.is_backing_up = False
+        self.set_controls_state("normal")
+        self.update_step_buttons()
         if result == 0:
+            self.progress_bar.set(1)
+            self.progress_text.set("100%")
             self.status.set(self.tr("backup_success"))
             self.update_config_summary()
             messagebox.showinfo(self.tr("backup_success"), self.tr("backup_success_body"))
         else:
             self.status.set(self.tr("backup_failed"))
-            messagebox.showerror(self.tr("backup_failed"), self.tr("backup_failed_body"))
+            detail = last_error_from_log()
+            body = self.tr("backup_failed_body")
+            if detail:
+                body = f"{body}\n\nChi tiết gần nhất:\n{detail}"
+            if "WinError 5" in detail or "Access is denied" in detail or "Không có quyền" in detail:
+                body = f"{body}\n\n{self.tr('permission_hint')}"
+            messagebox.showerror(self.tr("backup_failed"), body)
+
+    def run_now(self) -> None:
+        if self.is_backing_up:
+            return
+        if not self.save():
+            return
+        self.is_backing_up = True
+        self.set_controls_state("disabled")
+        self.status.set(self.tr("backup_running"))
+        self.progress_bar.set(0)
+        self.progress_text.set("0%")
+
+        def worker() -> None:
+            result = run_backup(CONFIG_PATH, self.update_progress)
+            self.after(0, lambda: self.finish_backup(result))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def install_schedule(self) -> None:
         if not self.save():
             return
-        args = ["/Create", "/F", "/TN", APP_NAME, "/TR", scheduled_command(), "/ST", self.config_data.time]
+        args = ["/Create", "/F", "/TN", APP_NAME, "/TR", scheduled_command(CONFIG_PATH), "/ST", self.config_data.time]
         if self.config_data.frequency == "daily":
             args.extend(["/SC", "DAILY"])
         else:
@@ -1093,6 +1736,16 @@ class BackupToolApp(ctk.CTk):
             messagebox.showerror(self.tr("install_failed"), result.stderr or result.stdout or self.tr("admin_hint"))
 
     def remove_schedule(self) -> None:
+        if not task_is_installed():
+            self.update_schedule_status()
+            messagebox.showinfo(self.tr("remove_failed"), self.tr("schedule_missing_body"))
+            return
+        confirmed = messagebox.askyesno(
+            self.tr("remove_schedule"),
+            f"Bạn có chắc muốn gỡ lịch tự động hiện tại không?\n\nTask Windows: {APP_NAME}",
+        )
+        if not confirmed:
+            return
         result = subprocess.run(["schtasks.exe", "/Delete", "/F", "/TN", APP_NAME], text=True, capture_output=True)
         if result.returncode == 0:
             self.status.set(self.tr("removed"))
@@ -1100,11 +1753,12 @@ class BackupToolApp(ctk.CTk):
             messagebox.showinfo(self.tr("removed"), self.tr("schedule_removed_body"))
         else:
             self.status.set(self.tr("remove_failed"))
+            self.update_schedule_status()
             messagebox.showwarning(self.tr("remove_failed"), result.stderr or result.stdout or self.tr("schedule_missing_body"))
 
     def open_log(self) -> None:
         if not LOG_PATH.exists():
-            LOG_PATH.write_text("Chua co log backup.\n", encoding="utf-8")
+            LOG_PATH.write_text("Chưa có log backup.\n", encoding="utf-8")
         os.startfile(LOG_PATH)
 
 
