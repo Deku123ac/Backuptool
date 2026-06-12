@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+build/
+*.log
+backup_config.json
+backup_log.txt
+*.in_progress/
+*_FAILED/
