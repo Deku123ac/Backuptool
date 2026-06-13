@@ -8,18 +8,19 @@ Tool backup portable cho Windows, có giao diện Tiếng Việt / English, hỗ
 2. Vào file `dist/BackupToolPro-portable.zip`
 3. Bấm `Download raw file` hoặc `View raw` để tải ZIP
 4. Giải nén ZIP
-5. Mở `BackupToolPro.exe`
+5. Mở `BackupToolPro\BackupToolPro.exe`
 
 ## Cách dùng nhanh
 
-1. Mở `BackupToolPro.exe`
+1. Mở `BackupToolPro\BackupToolPro.exe`
 2. App mở ở trang `Cấu hình đã lưu`
-3. Nếu đã có cấu hình cũ, tick chọn cấu hình rồi bấm `Tải cấu hình này` hoặc `Chạy cấu hình này`
-4. Nếu muốn tạo cấu hình mới, bấm `Tạo cấu hình mới`
-5. Bước `Dữ liệu`: thêm file/folder cần backup
-6. Bước `Nơi lưu`: chọn folder lưu backup
-7. Bước `Lịch`: chọn lịch, ngày và giờ backup
-8. Bước `Chạy backup`: bấm `Kiểm tra`, `Backup ngay` hoặc `Cài lịch`
+3. Nếu đã có cấu hình cũ, tick chọn cấu hình rồi bấm `Chỉnh sửa cấu hình` hoặc `Chạy cấu hình này`
+4. Khi chỉnh sửa cấu hình cũ, bấm `Hoàn tất` sẽ ghi đè cấu hình đó, không sinh thêm dòng mới
+5. Nếu muốn tạo cấu hình mới, bấm `Tạo cấu hình mới`
+6. Bước `Dữ liệu`: thêm file/folder cần backup
+7. Bước `Nơi lưu`: chọn folder lưu backup
+8. Bước `Lịch`: chọn lịch, ngày và giờ backup
+9. Bước `Chạy backup`: bấm `Kiểm tra`, `Backup ngay` hoặc `Cài lịch`
 
 App tự lưu tối đa 20 cấu hình gần nhất. Các cấu hình này chỉ là đường dẫn, lịch và tuỳ chọn, thường chỉ vài KB, không ngốn dung lượng.
 
@@ -28,7 +29,7 @@ App tự lưu tối đa 20 cấu hình gần nhất. Các cấu hình này chỉ
 - `Kiểm tra`: kiểm tra cấu hình trước khi chạy, gồm dữ liệu nguồn có tồn tại không, nơi lưu có hợp lệ không, quyền đọc/ghi và dung lượng còn đủ không.
 - `Cài lịch`: tạo lịch tự động bằng Windows Task Scheduler. Sau khi cài, Windows tự chạy backup theo giờ đã chọn.
 - `Backup ngay`: chạy backup ngay tại thời điểm hiện tại.
-- `Tải cấu hình này`: nạp lại cấu hình cũ để chỉnh sửa hoặc cài lịch lại.
+- `Chỉnh sửa cấu hình`: nạp lại cấu hình cũ để chỉnh sửa hoặc cài lịch lại. Khi bấm `Hoàn tất`, app ghi đè cấu hình đang chỉnh.
 - `Chạy cấu hình này`: nạp cấu hình cũ và backup ngay.
 - `Gỡ lịch tự động`: xoá lịch backup tự động khỏi Windows Task Scheduler.
 - `Mở log`: mở file log để xem lịch sử backup và lỗi nếu có.

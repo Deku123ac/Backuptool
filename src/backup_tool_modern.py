@@ -107,6 +107,8 @@ TEXT = {
         "config_deleted": "Đã xóa cấu hình",
         "choose_saved_config": "Hãy chọn một cấu hình đã lưu trước.",
         "finish": "Hoàn tất",
+        "editing_config": "Đang chỉnh sửa",
+        "running_config": "Đang chạy",
     },
     "en": {
         "built_for": "",
@@ -196,6 +198,8 @@ TEXT = {
         "config_deleted": "Configuration deleted",
         "choose_saved_config": "Choose a saved configuration first.",
         "finish": "Finish",
+        "editing_config": "Editing",
+        "running_config": "Running",
     },
 }
 
@@ -316,20 +320,22 @@ def save_saved_configs(items: list[dict]) -> None:
     )
 
 
-def upsert_saved_config(config: BackupConfig) -> str:
+def upsert_saved_config(config: BackupConfig, existing_id: str = "") -> str:
     items = load_saved_configs()
     signature = config_signature(config)
+    item_ids = {item.get("id") for item in items}
+    config_id = existing_id if existing_id in item_ids else signature
     now = datetime.now().isoformat(timespec="seconds")
     entry = {
-        "id": signature,
+        "id": config_id,
         "name": config_display_name(config),
         "updated_at": now,
         "config": asdict(config),
     }
-    items = [item for item in items if item.get("id") != signature]
+    items = [item for item in items if item.get("id") not in {config_id, signature}]
     items.insert(0, entry)
     save_saved_configs(items)
-    return signature
+    return config_id
 
 
 def delete_saved_config(config_id: str) -> None:
@@ -787,6 +793,8 @@ class BackupToolApp(ctk.CTk):
         self.config_summary = ctk.StringVar(value="Chưa có cấu hình backup")
         self.progress_text = ctk.StringVar(value=self.tr("progress_idle"))
         self.selected_saved_config = ctk.StringVar(value="")
+        self.editing_saved_config_id = ""
+        self.running_saved_config_id = ""
         self.is_backing_up = False
         self.lockable_controls = []
         self.step_tabs = []
@@ -1247,6 +1255,9 @@ class BackupToolApp(ctk.CTk):
 
     def next_step(self) -> None:
         index = self.active_step_index()
+        if index == 0:
+            self.start_new_config()
+            return
         if index >= len(self.step_tabs) - 1:
             self.finish_configuration()
             return
@@ -1255,6 +1266,15 @@ class BackupToolApp(ctk.CTk):
 
     def previous_step(self) -> None:
         self.go_step(self.active_step_index() - 1)
+
+    def start_new_config(self) -> None:
+        config = default_config()
+        config.language = self.language.get()
+        self.editing_saved_config_id = ""
+        self.selected_saved_config.set("")
+        self.apply_config_to_ui(config)
+        self.status.set(self.tr("ready"))
+        self.go_step(1)
 
     def finish_configuration(self) -> None:
         if not self.current_step_ready():
@@ -1396,7 +1416,7 @@ class BackupToolApp(ctk.CTk):
             empty.pack(fill="both", expand=True, padx=18, pady=28)
             ctk.CTkLabel(empty, text=self.tr("empty_saved_configs"), font=("Segoe UI", 18, "bold"), text_color="#e2e8f0").pack()
             ctk.CTkLabel(empty, text=self.tr("empty_saved_configs_body"), font=("Segoe UI", 13), text_color="#64748b", wraplength=720).pack(pady=(6, 0))
-            ctk.CTkButton(empty, text=self.tr("create_new_config"), command=lambda: self.go_step(1), width=180, height=40).pack(pady=(18, 0))
+            ctk.CTkButton(empty, text=self.tr("create_new_config"), command=self.start_new_config, width=180, height=40).pack(pady=(18, 0))
             return
 
         for item in items:
@@ -1409,6 +1429,16 @@ class BackupToolApp(ctk.CTk):
         row.pack(fill="x", padx=10, pady=6)
         row.grid_columnconfigure(0, weight=1)
         title = item.get("name") or config_display_name(config)
+        config_id = item.get("id", "")
+        badges = []
+        if config_id and config_id == self.running_saved_config_id:
+            badges.append(self.tr("running_config"))
+        if config_id and config_id == self.editing_saved_config_id:
+            badges.append(self.tr("editing_config"))
+        if config_id and config_id == self.selected_saved_config.get() and not badges:
+            badges.append("Đã chọn" if self.language.get() == "vi" else "Selected")
+        if badges:
+            title = f"{title}  ·  {' / '.join(badges)}"
         frequency_label = FREQUENCY_LABELS.get(self.language.get(), FREQUENCY_LABELS["vi"]).get(config.frequency, config.frequency)
         if config.frequency == "custom":
             days = ", ".join(WEEKDAY_LABELS.get(day, day) for day in (config.weekdays or []))
@@ -1423,12 +1453,15 @@ class BackupToolApp(ctk.CTk):
         detail_label.grid(row=1, column=0, sticky="ew", padx=14, pady=(2, 0))
         dest_label = ctk.CTkLabel(row, text=f"Nơi lưu: {config.destination}", font=("Segoe UI", 11), text_color="#94a3b8", anchor="w")
         dest_label.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
-        radio = ctk.CTkRadioButton(row, text="", variable=self.selected_saved_config, value=item.get("id", ""), width=24)
+        radio = ctk.CTkRadioButton(row, text="", variable=self.selected_saved_config, value=config_id, width=24, command=lambda value=config_id: self.select_saved_config(value))
         radio.grid(row=0, column=1, rowspan=3, padx=12)
-        config_id = item.get("id", "")
         for widget in (row, title_label, detail_label, dest_label):
-            widget.bind("<Button-1>", lambda _event, value=config_id: self.selected_saved_config.set(value))
+            widget.bind("<Button-1>", lambda _event, value=config_id: self.select_saved_config(value))
             widget.bind("<Double-Button-1>", lambda _event, value=config_id: (self.selected_saved_config.set(value), self.load_selected_saved_config()))
+
+    def select_saved_config(self, config_id: str) -> None:
+        self.selected_saved_config.set(config_id)
+        self.refresh_saved_configs()
 
     def selected_saved_item(self) -> dict | None:
         selected_id = self.selected_saved_config.get()
@@ -1472,8 +1505,11 @@ class BackupToolApp(ctk.CTk):
         config = BackupConfig(**{**asdict(default_config()), **(item.get("config") or {})})
         config.language = self.language.get()
         self.apply_config_to_ui(config)
+        self.editing_saved_config_id = item.get("id", "")
+        self.selected_saved_config.set(self.editing_saved_config_id)
         save_config(config)
         self.status.set(self.tr("config_loaded"))
+        self.refresh_saved_configs()
         self.go_step(1)
 
     def run_selected_saved_config(self) -> None:
@@ -1483,6 +1519,8 @@ class BackupToolApp(ctk.CTk):
         config = BackupConfig(**{**asdict(default_config()), **(item.get("config") or {})})
         config.language = self.language.get()
         self.apply_config_to_ui(config)
+        self.editing_saved_config_id = item.get("id", "")
+        self.selected_saved_config.set(self.editing_saved_config_id)
         save_config(config)
         self.go_step(4)
         self.run_now()
@@ -1494,6 +1532,10 @@ class BackupToolApp(ctk.CTk):
         if not messagebox.askyesno(self.tr("delete_config"), self.tr("delete_config") + "?"):
             return
         delete_saved_config(item.get("id", ""))
+        if self.editing_saved_config_id == item.get("id", ""):
+            self.editing_saved_config_id = ""
+        if self.running_saved_config_id == item.get("id", ""):
+            self.running_saved_config_id = ""
         self.selected_saved_config.set("")
         self.refresh_saved_configs()
         self.status.set(self.tr("config_deleted"))
@@ -1649,7 +1691,9 @@ class BackupToolApp(ctk.CTk):
             return False
         self.config_data = config
         save_config(config)
-        self.selected_saved_config.set(upsert_saved_config(config))
+        saved_id = upsert_saved_config(config, self.editing_saved_config_id)
+        self.editing_saved_config_id = saved_id
+        self.selected_saved_config.set(saved_id)
         self.refresh_saved_configs()
         self.time.set(config.time)
         hour, minute = split_time(config.time)
@@ -1701,7 +1745,9 @@ class BackupToolApp(ctk.CTk):
 
     def finish_backup(self, result: int) -> None:
         self.is_backing_up = False
+        self.running_saved_config_id = ""
         self.set_controls_state("normal")
+        self.refresh_saved_configs()
         self.update_step_buttons()
         if result == 0:
             self.progress_bar.set(1)
@@ -1724,6 +1770,8 @@ class BackupToolApp(ctk.CTk):
             return
         if not self.save():
             return
+        self.running_saved_config_id = self.selected_saved_config.get()
+        self.refresh_saved_configs()
         self.is_backing_up = True
         self.set_controls_state("disabled")
         self.status.set(self.tr("backup_running"))
