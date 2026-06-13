@@ -24,7 +24,9 @@ Tool backup portable cho Windows, có giao diện Tiếng Việt / English, hỗ
 
 App tự lưu tối đa 20 cấu hình gần nhất. Các cấu hình này chỉ là đường dẫn, lịch và tuỳ chọn, thường chỉ vài KB, không ngốn dung lượng.
 
-Gói hiện tại là bản source-safe không đóng gói EXE để giảm cảnh báo Windows Defender. Máy cần có Python 3.12 trở lên. Nếu thiếu thư viện, launcher sẽ tự cài theo `requirements.txt`.
+Gói hiện tại là bản source-safe không đóng gói EXE để giảm cảnh báo Windows Defender. Máy cần có Python 3.12 trở lên. Nếu thiếu thư viện, launcher sẽ tự cài theo `requirements.txt`. Launcher dùng `pythonw` nên không bật cửa sổ console đen.
+
+Khi backup, app copy từng file và cập nhật phần trăm liên tục. Giao diện chỉ hiển thị thống kê nhẹ; quét sâu chỉ chạy khi bấm `Kiểm tra`, `Backup ngay`, hoặc `Cài lịch`.
 
 ## Các nút trong app
 

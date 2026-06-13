@@ -396,6 +396,23 @@ def source_size(source: Path) -> int:
     return sum(item.stat().st_size for item in source_files(source))
 
 
+def scan_source_plan(sources: list[Path]) -> tuple[int, int]:
+    total_bytes = 0
+    total_items = 0
+    for source in sources:
+        if source.is_file():
+            total_bytes += source.stat().st_size
+            total_items += 1
+            continue
+        for root, dir_names, file_names in os.walk(source):
+            dir_names.sort()
+            file_names.sort()
+            total_items += 1 + len(file_names)
+            for file_name in file_names:
+                total_bytes += (Path(root) / file_name).stat().st_size
+    return total_bytes, max(1, total_items)
+
+
 def explain_access_error(path: Path, exc: Exception) -> str:
     return (
         f"Không có quyền đọc/ghi: {path}. "
@@ -425,14 +442,10 @@ def preflight_access_check(sources: list[Path], destination: Path) -> None:
         raise RuntimeError(f"Không ghi được vào nơi lưu backup: {destination}. Chi tiết: {exc}") from exc
 
     for source in sources:
-        if source.is_file():
-            assert_readable_file(source)
-            continue
         try:
-            for folder in source_dirs(source):
-                folder.stat()
-            for file_path in source_files(source):
-                assert_readable_file(file_path)
+            source.stat()
+            if source.is_file():
+                assert_readable_file(source)
         except PermissionError:
             raise
         except OSError as exc:
@@ -551,14 +564,60 @@ def verify_source_copy(source: Path, target: Path, progress_callback=None, progr
 
 def copy_source(source: Path, target_root: Path, progress_callback=None, progress_state: dict | None = None) -> tuple[Path, list[dict]]:
     target = unique_path(target_root / source.name)
-    if source.is_dir():
-        shutil.copytree(source, target, copy_function=shutil.copy2)
-        entries = verify_source_copy(source, target, progress_callback, progress_state)
-        log(f"OK folder verified: {source} -> {target} ({len(entries)} files)")
-    else:
-        shutil.copy2(source, target)
-        entries = verify_source_copy(source, target, progress_callback, progress_state)
+    entries = []
+    if progress_state is None:
+        progress_state = {"done": 0, "total": 1}
+
+    def tick(message: str) -> None:
+        progress_state["done"] += 1
+        if progress_callback:
+            progress_callback(progress_state["done"], progress_state["total"], message)
+
+    if source.is_file():
+        try:
+            shutil.copy2(source, target)
+            entries.append(verify_file_pair(source, target))
+        except PermissionError as exc:
+            raise PermissionError(explain_access_error(source, exc)) from exc
+        except OSError as exc:
+            raise OSError(f"Không copy được file: {source}. Chi tiết: {exc}") from exc
+        tick(source.name)
         log(f"OK file verified: {source} -> {target}")
+        return target, entries
+
+    target.mkdir(parents=True, exist_ok=False)
+    entries.append(verify_dir_pair(source, target))
+    tick(source.name)
+    for root, dir_names, file_names in os.walk(source):
+        dir_names.sort()
+        file_names.sort()
+        root_path = Path(root)
+        relative_root = Path("") if root_path == source else root_path.relative_to(source)
+        target_root_dir = target / relative_root
+        for dir_name in dir_names:
+            source_dir = root_path / dir_name
+            target_dir = target_root_dir / dir_name
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copystat(source_dir, target_dir, follow_symlinks=False)
+                entries.append(verify_dir_pair(source_dir, target_dir))
+            except PermissionError as exc:
+                raise PermissionError(explain_access_error(source_dir, exc)) from exc
+            except OSError as exc:
+                raise OSError(f"Không tạo được folder: {target_dir}. Chi tiết: {exc}") from exc
+            tick(str(source_dir.relative_to(source)))
+        for file_name in file_names:
+            source_file = root_path / file_name
+            target_file = target_root_dir / file_name
+            try:
+                shutil.copy2(source_file, target_file)
+                entries.append(verify_file_pair(source_file, target_file))
+            except PermissionError as exc:
+                raise PermissionError(explain_access_error(source_file, exc)) from exc
+            except OSError as exc:
+                raise OSError(f"Không copy được file: {source_file}. Chi tiết: {exc}") from exc
+            tick(str(source_file.relative_to(source)))
+    log(f"OK folder verified: {source} -> {target} ({len(entries)} items)")
     return target, entries
 
 
@@ -648,14 +707,16 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
             log(f"ERROR: Nguon backup khong ton tai: {source}")
         return 1
 
+    if progress_callback:
+        progress_callback(0, 1, "Đang đếm file...")
     try:
-        total_bytes = sum(source_size(source) for source in sources)
-        total_items = sum((len(source_dirs(source)) + len(source_files(source))) if source.is_dir() else 1 for source in sources)
-        total_items = max(1, total_items)
+        total_bytes, total_items = scan_source_plan(sources)
     except Exception as exc:
         log(f"ERROR: Khong tinh duoc dung luong nguon backup -> {exc}")
         return 1
 
+    if progress_callback:
+        progress_callback(0, total_items, "Đang kiểm tra nơi lưu...")
     try:
         preflight_access_check(sources, destination)
     except Exception as exc:
@@ -677,7 +738,7 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
     manifest_entries = []
     progress_state = {"done": 0, "total": total_items}
     if progress_callback:
-        progress_callback(0, total_items, "Starting")
+        progress_callback(0, total_items, "Bắt đầu copy")
     try:
         for source in sources:
             target, entries = copy_source(source, backup_dir, progress_callback, progress_state)
@@ -687,8 +748,12 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
             raise RuntimeError("Khong co file nao duoc backup")
         write_manifest(backup_dir, config, manifest_entries, total_bytes)
         if config.zip_backup:
+            if progress_callback:
+                progress_callback(total_items, total_items, "Đang nén ZIP...")
             zip_folder(backup_dir, final_name)
         else:
+            if progress_callback:
+                progress_callback(total_items, total_items, "Đang hoàn tất...")
             final_dir = unique_path(destination / final_name)
             backup_dir.rename(final_dir)
             log(f"FOLDER verified: {final_dir}")
