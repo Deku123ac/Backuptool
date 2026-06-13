@@ -104,4 +104,6 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name BackupTool
 5. Select an old configuration to load/run it, or click `Create new config`
 6. Add files/folders, choose destination, schedule, then run or install schedule
 
+For a new PC, the user flow is still simple: extract ZIP, open `Open_BackupToolPro.bat`, choose backup sources, choose destination, choose start date/time, then click `Install schedule`. If Python is missing and the PC has winget, the launcher tries to install Python 3.12 automatically. If only customtkinter is missing, the launcher installs it from `requirements.txt`.
+
 The app verifies copied files with SHA-256 and creates `backup_manifest.json` for every backup.
