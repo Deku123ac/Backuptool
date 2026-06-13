@@ -36,13 +36,17 @@ TEXT = {
         "choose": "Chọn",
         "open": "Mở",
         "schedule": "Lịch backup",
-        "schedule_hint": "Mỗi ngày, mỗi tuần, hoặc chỉ các ngày bạn chọn",
+        "schedule_hint": "Chọn kiểu lịch đơn giản, app sẽ hiện đúng phần cần thiết",
+        "schedule_type": "Kiểu lịch",
         "start_date": "Ngày bắt đầu",
+        "run_time": "Giờ chạy",
+        "weekly_day": "Chạy vào thứ",
+        "custom_days": "Chọn các ngày trong tuần",
         "invalid_start_date": "Ngày bắt đầu không hợp lệ",
         "invalid_start_date_body": "Hãy chọn ngày bắt đầu hợp lệ.",
-        "daily_rule": "Mỗi ngày: backup sẽ bắt đầu từ {date} và chạy mỗi ngày lúc {time}. Không cần tick ngày bên dưới.",
-        "weekly_rule": "Mỗi tuần: backup sẽ bắt đầu từ {date}, chạy vào {day} lúc {time}.",
-        "custom_rule": "Tùy chọn ngày: backup sẽ bắt đầu từ {date}, chạy vào {days} lúc {time}.",
+        "daily_rule": "Rõ ràng: từ ngày {date}, app sẽ backup mỗi ngày lúc {time}.",
+        "weekly_rule": "Rõ ràng: từ ngày {date}, app sẽ backup mỗi tuần vào {day} lúc {time}.",
+        "custom_rule": "Rõ ràng: từ ngày {date}, app sẽ backup vào {days} lúc {time}.",
         "custom_rule_empty": "Tùy chọn ngày: hãy tick ít nhất một ngày để cài lịch.",
         "next_invalid": "Lần backup kế tiếp: nhập giờ hợp lệ",
         "next_daily": "Lần backup kế tiếp",
@@ -134,13 +138,17 @@ TEXT = {
         "choose": "Choose",
         "open": "Open",
         "schedule": "Backup schedule",
-        "schedule_hint": "Daily, weekly, or selected weekdays",
+        "schedule_hint": "Choose a simple schedule type; the app only shows the needed fields",
+        "schedule_type": "Schedule type",
         "start_date": "Start date",
+        "run_time": "Run time",
+        "weekly_day": "Run on",
+        "custom_days": "Choose weekdays",
         "invalid_start_date": "Invalid start date",
         "invalid_start_date_body": "Choose a valid start date.",
-        "daily_rule": "Daily: backup starts on {date} and runs every day at {time}. No weekday checkbox is needed.",
-        "weekly_rule": "Weekly: backup starts on {date}, then runs on {day} at {time}.",
-        "custom_rule": "Custom days: backup starts on {date}, then runs on {days} at {time}.",
+        "daily_rule": "Clear rule: from {date}, backup runs every day at {time}.",
+        "weekly_rule": "Clear rule: from {date}, backup runs every week on {day} at {time}.",
+        "custom_rule": "Clear rule: from {date}, backup runs on {days} at {time}.",
         "custom_rule_empty": "Custom days: choose at least one weekday before installing schedule.",
         "next_invalid": "Next backup: enter a valid time",
         "next_daily": "Next backup",
@@ -1365,7 +1373,8 @@ class BackupToolApp(ctk.CTk):
         ctk.CTkLabel(card, text=self.tr("schedule_hint"), font=("Segoe UI", 12), text_color="#94a3b8").pack(anchor="w", padx=18)
         row = ctk.CTkFrame(card, fg_color="transparent")
         row.pack(fill="x", padx=18, pady=(14, 8))
-        row.grid_columnconfigure(0, weight=1)
+        row.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(row, text=self.tr("schedule_type"), text_color="#94a3b8", font=("Segoe UI", 12, "bold"), width=110, anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 10))
         self.frequency_switch = ctk.CTkSegmentedButton(
             row,
             values=self.frequency_values(),
@@ -1373,13 +1382,30 @@ class BackupToolApp(ctk.CTk):
             command=self.set_frequency_choice,
             height=38,
         )
-        self.frequency_switch.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        time_picker = ctk.CTkFrame(row, fg_color="transparent")
-        time_picker.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(14, 0))
+        self.frequency_switch.grid(row=0, column=1, sticky="ew")
+
+        date_row = ctk.CTkFrame(card, fg_color="transparent")
+        date_row.pack(fill="x", padx=18, pady=(4, 10))
+        ctk.CTkLabel(date_row, text=self.tr("start_date"), text_color="#94a3b8", font=("Segoe UI", 12, "bold"), width=110, anchor="w").pack(side="left", padx=(0, 10))
+        current_year = datetime.now().year
+        years = [str(year) for year in range(current_year, current_year + 6)]
+        months = [f"{month:02d}" for month in range(1, 13)]
+        days = [f"{day:02d}" for day in range(1, 32)]
+        self.start_day_menu = ctk.CTkOptionMenu(date_row, values=days, variable=self.start_day, command=self.sync_start_date_from_selectors, width=72)
+        self.start_day_menu.pack(side="left", padx=(0, 8))
+        self.start_month_menu = ctk.CTkOptionMenu(date_row, values=months, variable=self.start_month, command=self.sync_start_date_from_selectors, width=72)
+        self.start_month_menu.pack(side="left", padx=(0, 8))
+        self.start_year_menu = ctk.CTkOptionMenu(date_row, values=years, variable=self.start_year, command=self.sync_start_date_from_selectors, width=92)
+        self.start_year_menu.pack(side="left")
+        self.lockable_controls.extend([self.start_day_menu, self.start_month_menu, self.start_year_menu])
+
+        time_picker = ctk.CTkFrame(card, fg_color="transparent")
+        time_picker.pack(fill="x", padx=18, pady=(0, 10))
         time_picker.grid_columnconfigure(1, weight=1)
         time_picker.grid_columnconfigure(3, weight=1)
+        ctk.CTkLabel(time_picker, text=self.tr("run_time"), text_color="#94a3b8", font=("Segoe UI", 12, "bold"), width=110, anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=(0, 10))
         preset_row = ctk.CTkFrame(time_picker, fg_color="transparent")
-        preset_row.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+        preset_row.grid(row=0, column=1, columnspan=3, sticky="w", pady=(0, 10))
         for preset in ["08:00", "12:00", "18:00", "21:00"]:
             button = ctk.CTkButton(preset_row, text=preset, width=72, height=32, fg_color="#1f2937", hover_color="#2563eb", command=lambda value=preset: self.set_time_preset(value))
             button.pack(side="left", padx=(0, 8))
@@ -1393,27 +1419,17 @@ class BackupToolApp(ctk.CTk):
         self.minute_slider.grid(row=1, column=3, sticky="ew")
         self.minute_slider.set(int(self.minute.get()))
         self.lockable_controls.extend([self.frequency_switch, self.hour_slider, self.minute_slider])
-        self.weekday_menu = ctk.CTkOptionMenu(row, values=list(WEEKDAY_LABELS.values()), variable=self.weekday_choice, command=self.set_weekday_choice, width=120, height=38)
-        self.weekday_menu.grid(row=0, column=2)
-        self.lockable_controls.append(self.weekday_menu)
 
-        date_row = ctk.CTkFrame(card, fg_color="transparent")
-        date_row.pack(fill="x", padx=18, pady=(0, 10))
-        ctk.CTkLabel(date_row, text=self.tr("start_date"), text_color="#94a3b8", font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 10))
-        current_year = datetime.now().year
-        years = [str(year) for year in range(current_year, current_year + 6)]
-        months = [f"{month:02d}" for month in range(1, 13)]
-        days = [f"{day:02d}" for day in range(1, 32)]
-        self.start_day_menu = ctk.CTkOptionMenu(date_row, values=days, variable=self.start_day, command=self.sync_start_date_from_selectors, width=72)
-        self.start_day_menu.pack(side="left", padx=(0, 8))
-        self.start_month_menu = ctk.CTkOptionMenu(date_row, values=months, variable=self.start_month, command=self.sync_start_date_from_selectors, width=72)
-        self.start_month_menu.pack(side="left", padx=(0, 8))
-        self.start_year_menu = ctk.CTkOptionMenu(date_row, values=years, variable=self.start_year, command=self.sync_start_date_from_selectors, width=92)
-        self.start_year_menu.pack(side="left")
-        self.lockable_controls.extend([self.start_day_menu, self.start_month_menu, self.start_year_menu])
+        self.weekly_day_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.weekly_day_frame.pack(fill="x", padx=18, pady=(0, 10))
+        ctk.CTkLabel(self.weekly_day_frame, text=self.tr("weekly_day"), text_color="#94a3b8", font=("Segoe UI", 12, "bold"), width=110, anchor="w").pack(side="left", padx=(0, 10))
+        self.weekday_menu = ctk.CTkOptionMenu(self.weekly_day_frame, values=list(WEEKDAY_LABELS.values()), variable=self.weekday_choice, command=self.set_weekday_choice, width=160, height=38)
+        self.weekday_menu.pack(side="left")
+        self.lockable_controls.append(self.weekday_menu)
 
         self.custom_days_frame = ctk.CTkFrame(card, fg_color="transparent")
         self.custom_days_frame.pack(fill="x", padx=18, pady=(0, 10))
+        ctk.CTkLabel(self.custom_days_frame, text=self.tr("custom_days"), text_color="#94a3b8", font=("Segoe UI", 12, "bold"), width=110, anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=4)
         for index, day in enumerate(WEEKDAY_LABELS):
             checkbox = ctk.CTkCheckBox(
                 self.custom_days_frame,
@@ -1422,7 +1438,7 @@ class BackupToolApp(ctk.CTk):
                 width=88,
                 command=self.update_schedule_summary,
             )
-            checkbox.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 8), pady=4)
+            checkbox.grid(row=1 + index // 4, column=index % 4, sticky="w", padx=(0, 8), pady=4)
             self.lockable_controls.append(checkbox)
 
         self.next_backup_label = ctk.CTkLabel(
@@ -1864,11 +1880,29 @@ class BackupToolApp(ctk.CTk):
                 self.syncing_weekdays = False
         else:
             self.sync_weekday_checks()
-        state = "normal" if frequency == "weekly" else "disabled"
-        self.weekday_menu.configure(state=state)
-        custom_state = "normal" if frequency == "custom" else "disabled"
-        for child in self.custom_days_frame.winfo_children():
-            child.configure(state=custom_state)
+        if frequency == "weekly":
+            if not self.weekly_day_frame.winfo_manager():
+                self.weekly_day_frame.pack(fill="x", padx=18, pady=(0, 10), before=self.next_backup_label)
+            self.weekday_menu.configure(state="normal")
+        else:
+            self.weekly_day_frame.pack_forget()
+            self.weekday_menu.configure(state="disabled")
+
+        if frequency == "custom":
+            if not self.custom_days_frame.winfo_manager():
+                self.custom_days_frame.pack(fill="x", padx=18, pady=(0, 10), before=self.next_backup_label)
+            for child in self.custom_days_frame.winfo_children():
+                try:
+                    child.configure(state="normal")
+                except Exception:
+                    pass
+        else:
+            self.custom_days_frame.pack_forget()
+            for child in self.custom_days_frame.winfo_children():
+                try:
+                    child.configure(state="disabled")
+                except Exception:
+                    pass
         self.update_schedule_summary()
 
     def sync_weekday_checks(self) -> None:
