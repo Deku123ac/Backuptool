@@ -8,11 +8,11 @@ Tool backup portable cho Windows, có giao diện Tiếng Việt / English, hỗ
 2. Vào file `dist/BackupToolPro-portable.zip`
 3. Bấm `Download raw file` hoặc `View raw` để tải ZIP
 4. Giải nén ZIP
-5. Mở `BackupToolPro\BackupToolPro.exe`
+5. Mở `Open_BackupToolPro.bat`
 
 ## Cách dùng nhanh
 
-1. Mở `BackupToolPro\BackupToolPro.exe`
+1. Mở `Open_BackupToolPro.bat`
 2. App mở ở trang `Cấu hình đã lưu`
 3. Nếu đã có cấu hình cũ, tick chọn cấu hình rồi bấm `Chỉnh sửa cấu hình` hoặc `Chạy cấu hình này`
 4. Khi chỉnh sửa cấu hình cũ, bấm `Hoàn tất` sẽ ghi đè cấu hình đó, không sinh thêm dòng mới
@@ -23,6 +23,8 @@ Tool backup portable cho Windows, có giao diện Tiếng Việt / English, hỗ
 9. Bước `Chạy backup`: bấm `Kiểm tra`, `Backup ngay` hoặc `Cài lịch`
 
 App tự lưu tối đa 20 cấu hình gần nhất. Các cấu hình này chỉ là đường dẫn, lịch và tuỳ chọn, thường chỉ vài KB, không ngốn dung lượng.
+
+Gói hiện tại là bản source-safe không đóng gói EXE để giảm cảnh báo Windows Defender. Máy cần có Python 3.12 trở lên. Nếu thiếu thư viện, launcher sẽ tự cài theo `requirements.txt`.
 
 ## Các nút trong app
 

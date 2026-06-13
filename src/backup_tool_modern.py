@@ -473,6 +473,19 @@ def config_stats(sources: list[str], destination: str, zip_backup: bool) -> tupl
     return len(files), total_bytes, free_bytes, None if free_bytes >= required or not destination else "Dung luong dich co the khong du"
 
 
+def quick_config_stats(sources: list[str], destination: str) -> tuple[int, int, str | None]:
+    paths = [Path(source) for source in sources]
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        return 0, 0, f"Thieu nguon: {missing[0]}"
+    count = len(paths)
+    try:
+        free_bytes = shutil.disk_usage(destination).free if destination and Path(destination).is_dir() else 0
+    except Exception:
+        free_bytes = 0
+    return count, free_bytes, None
+
+
 def verify_file_pair(source: Path, target: Path) -> dict:
     if not target.exists():
         raise RuntimeError(f"Verify failed, target missing: {target}")
@@ -818,6 +831,7 @@ class BackupToolApp(ctk.CTk):
         self.weekday.trace_add("write", lambda *_: self.on_weekday_changed())
         self.destination.trace_add("write", lambda *_: self.update_config_summary())
         self.zip_backup.trace_add("write", lambda *_: self.update_config_summary())
+        self.after(2500, self.recover_controls_if_idle)
         self.keep_latest.trace_add("write", lambda *_: self.update_config_summary())
         for var in self.weekday_vars.values():
             var.trace_add("write", lambda *_: self.update_schedule_summary())
@@ -1626,15 +1640,11 @@ class BackupToolApp(ctk.CTk):
         if not self.config_data.sources:
             self.config_summary.set(self.tr("no_config"))
             return
-        file_count, total_bytes, free_bytes, warning = config_stats(
-            self.config_data.sources,
-            self.destination.get().strip(),
-            bool(self.zip_backup.get()),
-        )
+        source_count, free_bytes, warning = quick_config_stats(self.config_data.sources, self.destination.get().strip())
         if self.language.get() == "en":
-            summary = f"{file_count} files | Data: {format_bytes(total_bytes)}"
+            summary = f"{source_count} sources"
         else:
-            summary = f"{file_count} file | Dữ liệu: {format_bytes(total_bytes)}"
+            summary = f"{source_count} nguồn"
         if free_bytes:
             summary += f" | {'Free at destination' if self.language.get() == 'en' else 'Còn trống nơi lưu'}: {format_bytes(free_bytes)}"
         summary += f" | {FREQUENCY_LABELS.get(self.language.get(), FREQUENCY_LABELS['vi']).get(self.frequency.get(), self.frequency.get())}"
@@ -1730,6 +1740,12 @@ class BackupToolApp(ctk.CTk):
                 control.configure(state=state)
             except Exception:
                 pass
+
+    def recover_controls_if_idle(self) -> None:
+        if not self.is_backing_up:
+            self.set_controls_state("normal")
+            self.update_step_buttons()
+        self.after(2500, self.recover_controls_if_idle)
 
     def update_progress(self, done: int, total: int, message: str = "") -> None:
         total = max(1, total)
