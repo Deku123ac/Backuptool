@@ -37,9 +37,12 @@ TEXT = {
         "open": "Mở",
         "schedule": "Lịch backup",
         "schedule_hint": "Mỗi ngày, mỗi tuần, hoặc chỉ các ngày bạn chọn",
-        "daily_rule": "Mỗi ngày: backup sẽ chạy mỗi ngày lúc {time}. Không cần tick ngày bên dưới.",
-        "weekly_rule": "Mỗi tuần: backup sẽ chạy vào {day} lúc {time}.",
-        "custom_rule": "Tùy chọn ngày: backup sẽ chạy vào {days} lúc {time}.",
+        "start_date": "Ngày bắt đầu",
+        "invalid_start_date": "Ngày bắt đầu không hợp lệ",
+        "invalid_start_date_body": "Hãy chọn ngày bắt đầu hợp lệ.",
+        "daily_rule": "Mỗi ngày: backup sẽ bắt đầu từ {date} và chạy mỗi ngày lúc {time}. Không cần tick ngày bên dưới.",
+        "weekly_rule": "Mỗi tuần: backup sẽ bắt đầu từ {date}, chạy vào {day} lúc {time}.",
+        "custom_rule": "Tùy chọn ngày: backup sẽ bắt đầu từ {date}, chạy vào {days} lúc {time}.",
         "custom_rule_empty": "Tùy chọn ngày: hãy tick ít nhất một ngày để cài lịch.",
         "next_invalid": "Lần backup kế tiếp: nhập giờ hợp lệ",
         "next_daily": "Lần backup kế tiếp",
@@ -132,9 +135,12 @@ TEXT = {
         "open": "Open",
         "schedule": "Backup schedule",
         "schedule_hint": "Daily, weekly, or selected weekdays",
-        "daily_rule": "Daily: backup will run every day at {time}. No weekday checkbox is needed.",
-        "weekly_rule": "Weekly: backup will run on {day} at {time}.",
-        "custom_rule": "Custom days: backup will run on {days} at {time}.",
+        "start_date": "Start date",
+        "invalid_start_date": "Invalid start date",
+        "invalid_start_date_body": "Choose a valid start date.",
+        "daily_rule": "Daily: backup starts on {date} and runs every day at {time}. No weekday checkbox is needed.",
+        "weekly_rule": "Weekly: backup starts on {date}, then runs on {day} at {time}.",
+        "custom_rule": "Custom days: backup starts on {date}, then runs on {days} at {time}.",
         "custom_rule_empty": "Custom days: choose at least one weekday before installing schedule.",
         "next_invalid": "Next backup: enter a valid time",
         "next_daily": "Next backup",
@@ -232,6 +238,8 @@ CONFIG_PATH = BASE_DIR / "backup_config.json"
 LOG_PATH = BASE_DIR / "backup_log.txt"
 SAVED_CONFIGS_PATH = BASE_DIR / "saved_backup_configs.json"
 MAX_SAVED_CONFIGS = 20
+ZIP_EXPLORER_MAX_PATH = 240
+ZIP_EXPLORER_MAX_PART = 120
 SKIPPED_DIR_NAMES = {
     ".git",
     ".hg",
@@ -266,15 +274,16 @@ class BackupConfig:
     destination: str
     frequency: str = "daily"
     time: str = "21:00"
+    start_date: str = ""
     weekday: str = "MON"
     weekdays: list[str] | None = None
     zip_backup: bool = True
-    keep_latest: int = 10
+    keep_latest: int = 3
     language: str = "vi"
 
 
 def default_config() -> BackupConfig:
-    return BackupConfig(sources=[], destination="")
+    return BackupConfig(sources=[], destination="", start_date=datetime.now().strftime("%Y-%m-%d"))
 
 
 def load_config(path: Path = CONFIG_PATH) -> BackupConfig:
@@ -285,6 +294,7 @@ def load_config(path: Path = CONFIG_PATH) -> BackupConfig:
             current.update(raw)
             current["sources"] = list(current.get("sources") or [])
             current["weekdays"] = list(current.get("weekdays") or [current.get("weekday") or "MON"])
+            current["start_date"] = normalize_date(current.get("start_date") or "") or datetime.now().strftime("%Y-%m-%d")
             current["language"] = current.get("language") if current.get("language") in TEXT else "vi"
             return BackupConfig(**current)
         except Exception:
@@ -303,10 +313,11 @@ def config_signature(config: BackupConfig) -> str:
         "destination": config.destination,
         "frequency": config.frequency,
         "time": config.time,
+        "start_date": config.start_date,
         "weekday": config.weekday,
         "weekdays": list(config.weekdays or []),
         "zip_backup": bool(config.zip_backup),
-        "keep_latest": int(config.keep_latest or 10),
+        "keep_latest": int(config.keep_latest or 3),
     }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -681,14 +692,36 @@ def copy_source(source: Path, target_root: Path, progress_callback=None, progres
     return target, entries
 
 
+class ZipExplorerIncompatible(RuntimeError):
+    pass
+
+
+def zip_arcname(final_name: str, item: Path, folder: Path) -> str:
+    return str((Path(final_name) / item.relative_to(folder)).as_posix())
+
+
+def assert_zip_explorer_compatible(folder: Path, final_name: str) -> None:
+    for root, dir_names, file_names in filtered_walk(folder):
+        items = [root / name for name in dir_names] + [root / name for name in file_names]
+        for item in items:
+            arcname = zip_arcname(final_name, item, folder)
+            parts = arcname.split("/")
+            if len(arcname) > ZIP_EXPLORER_MAX_PATH or any(len(part) > ZIP_EXPLORER_MAX_PART for part in parts):
+                raise ZipExplorerIncompatible(
+                    "ZIP co duong dan qua dai nen Windows Explorer co the mo loi. "
+                    f"App se giu backup dang folder: {arcname}"
+                )
+
+
 def zip_folder(folder: Path, final_name: str) -> Path:
+    assert_zip_explorer_compatible(folder, final_name)
     zip_path = unique_path(folder.parent / f"{final_name}.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for root, dir_names, file_names in filtered_walk(folder):
             items = [root / name for name in dir_names] + [root / name for name in file_names]
             for item in items:
                 try:
-                    archive.write(windows_long_path(item), Path(final_name) / item.relative_to(folder))
+                    archive.write(windows_long_path(item), zip_arcname(final_name, item, folder))
                 except PermissionError as exc:
                     raise PermissionError(explain_access_error(item, exc)) from exc
                 except OSError as exc:
@@ -813,7 +846,15 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
         if config.zip_backup:
             if progress_callback:
                 progress_callback(total_items, total_items, "Đang nén ZIP...")
-            zip_folder(backup_dir, final_name)
+            try:
+                zip_folder(backup_dir, final_name)
+            except ZipExplorerIncompatible as exc:
+                if progress_callback:
+                    progress_callback(total_items, total_items, "ZIP khong phu hop, giu dang folder...")
+                log(f"ZIP SKIPPED: {exc}")
+                final_dir = unique_path(destination / final_name)
+                os.replace(windows_long_path(backup_dir), windows_long_path(final_dir))
+                log(f"FOLDER verified: {final_dir}")
         else:
             if progress_callback:
                 progress_callback(total_items, total_items, "Đang hoàn tất...")
@@ -826,7 +867,7 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
         return 1
 
     try:
-        cleanup_old_backups(destination, max(1, int(config.keep_latest or 10)))
+        cleanup_old_backups(destination, max(1, int(config.keep_latest or 3)))
     except Exception as exc:
         log(f"CLEAN ERROR: {exc}")
         return 1
@@ -854,6 +895,33 @@ def split_time(value: str) -> tuple[str, str]:
     return hour, minute
 
 
+def normalize_date(value: str) -> str | None:
+    try:
+        parsed = datetime.strptime((value or "").strip(), "%Y-%m-%d").date()
+    except Exception:
+        return None
+    return parsed.strftime("%Y-%m-%d")
+
+
+def split_date(value: str) -> tuple[str, str, str]:
+    clean_date = normalize_date(value) or datetime.now().strftime("%Y-%m-%d")
+    year, month, day = clean_date.split("-")
+    return year, month, day
+
+
+def safe_date(year: str, month: str, day: str) -> str | None:
+    try:
+        parsed = datetime(int(year), int(month), int(day)).date()
+    except Exception:
+        return None
+    return parsed.strftime("%Y-%m-%d")
+
+
+def schtasks_date(value: str) -> str:
+    parsed = datetime.strptime(normalize_date(value) or datetime.now().strftime("%Y-%m-%d"), "%Y-%m-%d")
+    return parsed.strftime("%m/%d/%Y")
+
+
 def scheduled_command(config_path: Path = CONFIG_PATH) -> str:
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}" --run "{config_path}"'
@@ -865,17 +933,22 @@ def task_is_installed() -> bool:
     return result.returncode == 0
 
 
-def next_backup_text(frequency: str, time_text: str, weekday: str, weekdays: list[str], language: str = "vi") -> str:
+def next_backup_text(frequency: str, time_text: str, weekday: str, weekdays: list[str], language: str = "vi", start_date: str = "") -> str:
     text = TEXT.get(language, TEXT["vi"])
     clean_time = normalize_time(time_text)
     if not clean_time:
         return text["next_invalid"]
     hour, minute = [int(part) for part in clean_time.split(":")]
     now = datetime.now()
-    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    start_day = datetime.strptime(normalize_date(start_date) or now.strftime("%Y-%m-%d"), "%Y-%m-%d").date()
+    start_at = datetime.combine(start_day, datetime.min.time()).replace(hour=hour, minute=minute)
+    search_from = max(now, start_at - timedelta(minutes=1))
+    candidate = search_from.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
     if frequency == "daily":
-        if candidate <= now:
+        if candidate <= now or candidate < start_at:
+            candidate += timedelta(days=1)
+        while candidate < start_at:
             candidate += timedelta(days=1)
         return f"{text['next_daily']}: {candidate.strftime('%a %Y-%m-%d %H:%M')}"
 
@@ -886,12 +959,12 @@ def next_backup_text(frequency: str, time_text: str, weekday: str, weekdays: lis
 
     day_order = list(WEEKDAY_LABELS.keys())
     best = None
-    for offset in range(8):
-        check = now + timedelta(days=offset)
+    for offset in range(370):
+        check = search_from + timedelta(days=offset)
         if day_order[check.weekday()] not in selected_days:
             continue
         candidate = check.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate > now and (best is None or candidate < best):
+        if candidate > now and candidate >= start_at and (best is None or candidate < best):
             best = candidate
     if best is None:
         return text["next_unknown"]
@@ -922,6 +995,11 @@ class BackupToolApp(ctk.CTk):
         initial_hour, initial_minute = split_time(self.config_data.time)
         self.hour = ctk.StringVar(value=initial_hour)
         self.minute = ctk.StringVar(value=initial_minute)
+        initial_year, initial_month, initial_day = split_date(self.config_data.start_date)
+        self.start_year = ctk.StringVar(value=initial_year)
+        self.start_month = ctk.StringVar(value=initial_month)
+        self.start_day = ctk.StringVar(value=initial_day)
+        self.start_date = ctk.StringVar(value=safe_date(initial_year, initial_month, initial_day) or datetime.now().strftime("%Y-%m-%d"))
         self.weekday = ctk.StringVar(value=self.config_data.weekday)
         self.weekday_choice = ctk.StringVar(value=WEEKDAY_LABELS.get(self.config_data.weekday, "Thứ 2"))
         selected_weekdays = self.config_data.weekdays or [self.config_data.weekday]
@@ -957,6 +1035,7 @@ class BackupToolApp(ctk.CTk):
         self.hour.trace_add("write", lambda *_: self.sync_time_from_selectors())
         self.minute.trace_add("write", lambda *_: self.sync_time_from_selectors())
         self.time.trace_add("write", lambda *_: self.update_schedule_summary())
+        self.start_date.trace_add("write", lambda *_: self.update_schedule_summary())
         self.weekday.trace_add("write", lambda *_: self.on_weekday_changed())
         self.destination.trace_add("write", lambda *_: self.update_config_summary())
         self.zip_backup.trace_add("write", lambda *_: self.update_config_summary())
@@ -998,6 +1077,18 @@ class BackupToolApp(ctk.CTk):
 
     def selected_time(self) -> str:
         return f"{self.hour.get()}:{self.minute.get()}"
+
+    def selected_start_date(self) -> str:
+        return self.start_date.get()
+
+    def sync_start_date_from_selectors(self, *_args) -> None:
+        clean_date = safe_date(self.start_year.get(), self.start_month.get(), self.start_day.get())
+        if not clean_date:
+            day = min(int(self.start_day.get() or "1"), 28)
+            clean_date = safe_date(self.start_year.get(), self.start_month.get(), f"{day:02d}") or datetime.now().strftime("%Y-%m-%d")
+            self.start_day.set(clean_date.split("-")[2])
+        self.start_date.set(clean_date)
+        self.update_schedule_summary()
 
     def sync_time_from_selectors(self) -> None:
         self.time.set(self.selected_time())
@@ -1305,6 +1396,21 @@ class BackupToolApp(ctk.CTk):
         self.weekday_menu = ctk.CTkOptionMenu(row, values=list(WEEKDAY_LABELS.values()), variable=self.weekday_choice, command=self.set_weekday_choice, width=120, height=38)
         self.weekday_menu.grid(row=0, column=2)
         self.lockable_controls.append(self.weekday_menu)
+
+        date_row = ctk.CTkFrame(card, fg_color="transparent")
+        date_row.pack(fill="x", padx=18, pady=(0, 10))
+        ctk.CTkLabel(date_row, text=self.tr("start_date"), text_color="#94a3b8", font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 10))
+        current_year = datetime.now().year
+        years = [str(year) for year in range(current_year, current_year + 6)]
+        months = [f"{month:02d}" for month in range(1, 13)]
+        days = [f"{day:02d}" for day in range(1, 32)]
+        self.start_day_menu = ctk.CTkOptionMenu(date_row, values=days, variable=self.start_day, command=self.sync_start_date_from_selectors, width=72)
+        self.start_day_menu.pack(side="left", padx=(0, 8))
+        self.start_month_menu = ctk.CTkOptionMenu(date_row, values=months, variable=self.start_month, command=self.sync_start_date_from_selectors, width=72)
+        self.start_month_menu.pack(side="left", padx=(0, 8))
+        self.start_year_menu = ctk.CTkOptionMenu(date_row, values=years, variable=self.start_year, command=self.sync_start_date_from_selectors, width=92)
+        self.start_year_menu.pack(side="left")
+        self.lockable_controls.extend([self.start_day_menu, self.start_month_menu, self.start_year_menu])
 
         self.custom_days_frame = ctk.CTkFrame(card, fg_color="transparent")
         self.custom_days_frame.pack(fill="x", padx=18, pady=(0, 10))
@@ -1637,6 +1743,11 @@ class BackupToolApp(ctk.CTk):
         self.time.set(config.time)
         self.weekday.set(config.weekday or "MON")
         self.weekday_choice.set(WEEKDAY_LABELS.get(config.weekday or "MON", WEEKDAY_LABELS["MON"]))
+        year, month, day = split_date(config.start_date)
+        self.start_year.set(year)
+        self.start_month.set(month)
+        self.start_day.set(day)
+        self.start_date.set(safe_date(year, month, day) or datetime.now().strftime("%Y-%m-%d"))
         if config.frequency == "daily":
             selected_weekdays = []
         elif config.frequency == "custom":
@@ -1646,7 +1757,7 @@ class BackupToolApp(ctk.CTk):
         for day, var in self.weekday_vars.items():
             var.set(day in selected_weekdays)
         self.zip_backup.set(bool(config.zip_backup))
-        self.keep_latest.set(max(1, int(config.keep_latest or 10)))
+        self.keep_latest.set(max(1, int(config.keep_latest or 3)))
         if hasattr(self, "hour_slider"):
             self.hour_slider.set(int(hour))
         if hasattr(self, "minute_slider"):
@@ -1783,18 +1894,19 @@ class BackupToolApp(ctk.CTk):
 
     def update_schedule_summary(self) -> None:
         selected_days = self.selected_weekdays()
-        self.next_backup.set(next_backup_text(self.frequency.get(), self.selected_time(), self.weekday.get(), selected_days, self.language.get()))
+        start_date = normalize_date(self.selected_start_date()) or datetime.now().strftime("%Y-%m-%d")
+        self.next_backup.set(next_backup_text(self.frequency.get(), self.selected_time(), self.weekday.get(), selected_days, self.language.get(), start_date))
         time_text = normalize_time(self.selected_time()) or self.selected_time()
         frequency = self.frequency.get()
         if frequency == "daily":
-            self.schedule_detail.set(self.tr("daily_rule").format(time=time_text))
+            self.schedule_detail.set(self.tr("daily_rule").format(date=start_date, time=time_text))
         elif frequency == "weekly":
             day = WEEKDAY_LABELS.get(self.weekday.get(), self.weekday.get())
-            self.schedule_detail.set(self.tr("weekly_rule").format(day=day, time=time_text))
+            self.schedule_detail.set(self.tr("weekly_rule").format(date=start_date, day=day, time=time_text))
         else:
             if selected_days:
                 days = ", ".join(WEEKDAY_LABELS.get(day, day) for day in selected_days)
-                self.schedule_detail.set(self.tr("custom_rule").format(days=days, time=time_text))
+                self.schedule_detail.set(self.tr("custom_rule").format(date=start_date, days=days, time=time_text))
             else:
                 self.schedule_detail.set(self.tr("custom_rule_empty"))
 
@@ -1840,6 +1952,10 @@ class BackupToolApp(ctk.CTk):
         if not clean_time:
             messagebox.showwarning(self.tr("invalid_time"), self.tr("invalid_time_body"))
             return None
+        clean_start_date = normalize_date(self.selected_start_date())
+        if not clean_start_date:
+            messagebox.showwarning(self.tr("invalid_start_date"), self.tr("invalid_start_date_body"))
+            return None
         selected_days = self.selected_weekdays()
         if self.frequency.get() == "custom" and not selected_days:
             messagebox.showwarning(self.tr("missing_days"), self.tr("missing_days_body"))
@@ -1847,13 +1963,14 @@ class BackupToolApp(ctk.CTk):
         try:
             keep_latest = max(1, int(self.keep_latest.get() or 1))
         except Exception:
-            keep_latest = 10
+            keep_latest = 3
         stored_weekdays = selected_days if self.frequency.get() != "daily" else []
         return BackupConfig(
             sources=list(self.config_data.sources),
             destination=destination,
             frequency=self.frequency.get(),
             time=clean_time,
+            start_date=clean_start_date,
             weekday=self.weekday.get() or "MON",
             weekdays=stored_weekdays,
             zip_backup=bool(self.zip_backup.get()),
@@ -1969,7 +2086,18 @@ class BackupToolApp(ctk.CTk):
     def install_schedule(self) -> None:
         if not self.save():
             return
-        args = ["/Create", "/F", "/TN", APP_NAME, "/TR", scheduled_command(CONFIG_PATH), "/ST", self.config_data.time]
+        args = [
+            "/Create",
+            "/F",
+            "/TN",
+            APP_NAME,
+            "/TR",
+            scheduled_command(CONFIG_PATH),
+            "/ST",
+            self.config_data.time,
+            "/SD",
+            schtasks_date(self.config_data.start_date),
+        ]
         if self.config_data.frequency == "daily":
             args.extend(["/SC", "DAILY"])
         else:

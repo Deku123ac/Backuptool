@@ -19,7 +19,7 @@ Tool backup portable cho Windows, có giao diện Tiếng Việt / English, hỗ
 5. Nếu muốn tạo cấu hình mới, bấm `Tạo cấu hình mới`
 6. Bước `Dữ liệu`: thêm file/folder cần backup
 7. Bước `Nơi lưu`: chọn folder lưu backup
-8. Bước `Lịch`: chọn lịch, ngày và giờ backup
+8. Bước `Lịch`: chọn ngày bắt đầu, lịch, ngày và giờ backup
 9. Bước `Chạy backup`: bấm `Kiểm tra`, `Backup ngay` hoặc `Cài lịch`
 
 App tự lưu tối đa 20 cấu hình gần nhất. Các cấu hình này chỉ là đường dẫn, lịch và tuỳ chọn, thường chỉ vài KB, không ngốn dung lượng.
@@ -30,7 +30,9 @@ Khi backup, app copy từng file và cập nhật phần trăm liên tục. Giao
 
 Để tránh lỗi đường dẫn quá dài như `.venv\Lib\site-packages\...\__pycache__`, app tự bỏ qua các folder kỹ thuật/cache: `.venv`, `venv`, `__pycache__`, `.git`, `node_modules`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`.
 
-Lịch `Mỗi ngày` không dùng checkbox ngày. Checkbox ngày chỉ dùng cho chế độ `Tùy chọn ngày`.
+Lịch `Mỗi ngày` có `Ngày bắt đầu`; Windows chỉ chạy tự động từ ngày đó trở đi. Lịch `Mỗi ngày` không dùng checkbox ngày. Checkbox ngày chỉ dùng cho chế độ `Tùy chọn ngày`.
+
+Mặc định app giữ 3 bản backup gần nhất. Bạn có thể tăng/giảm số này ở bước `Chạy backup`.
 
 `Hoàn tất` chỉ lưu cấu hình/lịch và quay về danh sách cấu hình đã lưu. Nó không quét file, không copy và không tạo backup mới. Backup thật chỉ chạy khi bấm `Backup ngay` hoặc tới đúng giờ lịch Windows đã cài.
 
@@ -57,7 +59,7 @@ Tool chỉ báo thành công khi:
 - Tất cả file/folder nguồn còn tồn tại
 - Copy đầy đủ dữ liệu
 - Verify từng file bằng SHA-256 thành công
-- File ZIP tạo xong và kiểm tra không lỗi
+- File ZIP tạo xong và kiểm tra không lỗi. Nếu đường dẫn bên trong ZIP quá dài khiến Windows Explorer dễ báo ZIP invalid, app tự giữ bản backup dạng folder đã verify thay vì tạo ZIP hỏng.
 - Manifest được tạo thành công
 
 Nếu gặp lỗi:
@@ -87,7 +89,7 @@ Cài thư viện:
 python -m pip install -r requirements.txt
 ```
 
-Build file EXE:
+Build file EXE tuỳ chọn cho người phát triển:
 
 ```powershell
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name BackupToolPro --collect-data customtkinter src\backup_tool_modern.py
@@ -97,7 +99,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name BackupTool
 
 1. Download `dist/BackupToolPro-portable.zip`
 2. Extract the ZIP file
-3. Run `BackupToolPro.exe`
+3. Run `Open_BackupToolPro.bat`
 4. The app opens on `Saved configurations`
 5. Select an old configuration to load/run it, or click `Create new config`
 6. Add files/folders, choose destination, schedule, then run or install schedule
