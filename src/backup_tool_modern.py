@@ -37,6 +37,10 @@ TEXT = {
         "open": "Mở",
         "schedule": "Lịch backup",
         "schedule_hint": "Mỗi ngày, mỗi tuần, hoặc chỉ các ngày bạn chọn",
+        "daily_rule": "Mỗi ngày: backup sẽ chạy mỗi ngày lúc {time}. Không cần tick ngày bên dưới.",
+        "weekly_rule": "Mỗi tuần: backup sẽ chạy vào {day} lúc {time}.",
+        "custom_rule": "Tùy chọn ngày: backup sẽ chạy vào {days} lúc {time}.",
+        "custom_rule_empty": "Tùy chọn ngày: hãy tick ít nhất một ngày để cài lịch.",
         "next_invalid": "Lần backup kế tiếp: nhập giờ hợp lệ",
         "next_daily": "Lần backup kế tiếp",
         "next_choose_day": "Lần backup kế tiếp: chọn ít nhất 1 ngày",
@@ -128,6 +132,10 @@ TEXT = {
         "open": "Open",
         "schedule": "Backup schedule",
         "schedule_hint": "Daily, weekly, or selected weekdays",
+        "daily_rule": "Daily: backup will run every day at {time}. No weekday checkbox is needed.",
+        "weekly_rule": "Weekly: backup will run on {day} at {time}.",
+        "custom_rule": "Custom days: backup will run on {days} at {time}.",
+        "custom_rule_empty": "Custom days: choose at least one weekday before installing schedule.",
         "next_invalid": "Next backup: enter a valid time",
         "next_daily": "Next backup",
         "next_choose_day": "Next backup: choose at least one day",
@@ -923,6 +931,7 @@ class BackupToolApp(ctk.CTk):
         self.status = ctk.StringVar(value=self.tr("ready"))
         self.schedule_state = ctk.StringVar(value="")
         self.next_backup = ctk.StringVar(value="")
+        self.schedule_detail = ctk.StringVar(value="")
         self.config_summary = ctk.StringVar(value="Chưa có cấu hình backup")
         self.progress_text = ctk.StringVar(value=self.tr("progress_idle"))
         self.selected_saved_config = ctk.StringVar(value="")
@@ -1317,7 +1326,16 @@ class BackupToolApp(ctk.CTk):
             text_color="#bfdbfe",
             anchor="w",
         )
-        self.next_backup_label.pack(fill="x", padx=18, pady=(0, 12))
+        self.next_backup_label.pack(fill="x", padx=18, pady=(0, 4))
+        self.schedule_detail_label = ctk.CTkLabel(
+            card,
+            textvariable=self.schedule_detail,
+            font=("Segoe UI", 12),
+            text_color="#93c5fd",
+            anchor="w",
+            wraplength=980,
+        )
+        self.schedule_detail_label.pack(fill="x", padx=18, pady=(0, 12))
 
     def active_step_index(self) -> int:
         return self.current_step_index
@@ -1619,7 +1637,12 @@ class BackupToolApp(ctk.CTk):
         self.time.set(config.time)
         self.weekday.set(config.weekday or "MON")
         self.weekday_choice.set(WEEKDAY_LABELS.get(config.weekday or "MON", WEEKDAY_LABELS["MON"]))
-        selected_weekdays = config.weekdays or [config.weekday or "MON"]
+        if config.frequency == "daily":
+            selected_weekdays = []
+        elif config.frequency == "custom":
+            selected_weekdays = config.weekdays or []
+        else:
+            selected_weekdays = [config.weekday or "MON"]
         for day, var in self.weekday_vars.items():
             var.set(day in selected_weekdays)
         self.zip_backup.set(bool(config.zip_backup))
@@ -1761,6 +1784,19 @@ class BackupToolApp(ctk.CTk):
     def update_schedule_summary(self) -> None:
         selected_days = self.selected_weekdays()
         self.next_backup.set(next_backup_text(self.frequency.get(), self.selected_time(), self.weekday.get(), selected_days, self.language.get()))
+        time_text = normalize_time(self.selected_time()) or self.selected_time()
+        frequency = self.frequency.get()
+        if frequency == "daily":
+            self.schedule_detail.set(self.tr("daily_rule").format(time=time_text))
+        elif frequency == "weekly":
+            day = WEEKDAY_LABELS.get(self.weekday.get(), self.weekday.get())
+            self.schedule_detail.set(self.tr("weekly_rule").format(day=day, time=time_text))
+        else:
+            if selected_days:
+                days = ", ".join(WEEKDAY_LABELS.get(day, day) for day in selected_days)
+                self.schedule_detail.set(self.tr("custom_rule").format(days=days, time=time_text))
+            else:
+                self.schedule_detail.set(self.tr("custom_rule_empty"))
 
     def update_config_summary(self) -> None:
         if not hasattr(self, "config_summary"):
@@ -1797,7 +1833,8 @@ class BackupToolApp(ctk.CTk):
             messagebox.showwarning(self.tr("missing_sources"), self.tr("missing_sources_body"))
             return None
         destination = self.destination.get().strip()
-        if not destination or not Path(destination).is_dir():
+        destination_path = Path(destination) if destination else None
+        if not destination_path or not path_exists(destination_path) or not os.path.isdir(windows_long_path(destination_path)):
             messagebox.showwarning(self.tr("invalid_destination"), self.tr("choose_destination_first"))
             return None
         if not clean_time:

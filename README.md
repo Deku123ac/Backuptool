@@ -32,6 +32,8 @@ Khi backup, app copy từng file và cập nhật phần trăm liên tục. Giao
 
 Lịch `Mỗi ngày` không dùng checkbox ngày. Checkbox ngày chỉ dùng cho chế độ `Tùy chọn ngày`.
 
+`Hoàn tất` chỉ lưu cấu hình/lịch và quay về danh sách cấu hình đã lưu. Nó không quét file, không copy và không tạo backup mới. Backup thật chỉ chạy khi bấm `Backup ngay` hoặc tới đúng giờ lịch Windows đã cài.
+
 ## Các nút trong app
 
 - `Kiểm tra`: kiểm tra cấu hình trước khi chạy, gồm dữ liệu nguồn có tồn tại không, nơi lưu có hợp lệ không, quyền đọc/ghi và dung lượng còn đủ không.
