@@ -224,6 +224,19 @@ CONFIG_PATH = BASE_DIR / "backup_config.json"
 LOG_PATH = BASE_DIR / "backup_log.txt"
 SAVED_CONFIGS_PATH = BASE_DIR / "saved_backup_configs.json"
 MAX_SAVED_CONFIGS = 20
+SKIPPED_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    "node_modules",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+}
 WEEKDAY_LABELS = {
     "MON": "Thứ 2",
     "TUE": "Thứ 3",
@@ -362,34 +375,78 @@ def last_error_from_log() -> str:
 
 
 def unique_path(path: Path) -> Path:
-    if not path.exists():
+    if not path_exists(path):
         return path
     counter = 2
     while True:
         candidate = path.with_name(f"{path.stem}_{counter}{path.suffix}")
-        if not candidate.exists():
+        if not path_exists(candidate):
             return candidate
         counter += 1
 
 
+def windows_long_path(path: Path | str) -> str:
+    text = str(Path(path).resolve())
+    if os.name != "nt" or text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def windows_normal_path(path: str) -> Path:
+    if os.name != "nt":
+        return Path(path)
+    if path.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + path[8:])
+    if path.startswith("\\\\?\\"):
+        return Path(path[4:])
+    return Path(path)
+
+
+def path_exists(path: Path) -> bool:
+    return os.path.exists(windows_long_path(path))
+
+
+def path_stat(path: Path):
+    return os.stat(windows_long_path(path))
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as fh:
+    with open(windows_long_path(path), "rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
+def filtered_walk(source: Path):
+    for root, dir_names, file_names in os.walk(windows_long_path(source)):
+        root_path = windows_normal_path(root)
+        skipped = [name for name in dir_names if name in SKIPPED_DIR_NAMES]
+        if skipped:
+            log(f"SKIP TECH FOLDERS: {root_path} -> {', '.join(sorted(skipped))}")
+        dir_names[:] = sorted(name for name in dir_names if name not in SKIPPED_DIR_NAMES)
+        yield root_path, dir_names, sorted(file_names)
+
+
 def source_files(source: Path) -> list[Path]:
-    if source.is_file():
+    if os.path.isfile(windows_long_path(source)):
         return [source]
-    return sorted([item for item in source.rglob("*") if item.is_file()])
+    files = []
+    for root, _dir_names, file_names in filtered_walk(source):
+        files.extend(root / name for name in file_names)
+    return sorted(files)
 
 
 def source_dirs(source: Path) -> list[Path]:
-    if source.is_file():
+    if os.path.isfile(windows_long_path(source)):
         return []
-    return [source, *sorted([item for item in source.rglob("*") if item.is_dir()])]
+    dirs = []
+    for root, dir_names, _file_names in filtered_walk(source):
+        dirs.append(root)
+        dirs.extend(root / name for name in dir_names)
+    return sorted(set(dirs))
 
 
 def source_size(source: Path) -> int:
@@ -400,16 +457,14 @@ def scan_source_plan(sources: list[Path]) -> tuple[int, int]:
     total_bytes = 0
     total_items = 0
     for source in sources:
-        if source.is_file():
-            total_bytes += source.stat().st_size
+        if os.path.isfile(windows_long_path(source)):
+            total_bytes += path_stat(source).st_size
             total_items += 1
             continue
-        for root, dir_names, file_names in os.walk(source):
-            dir_names.sort()
-            file_names.sort()
+        for root, dir_names, file_names in filtered_walk(source):
             total_items += 1 + len(file_names)
             for file_name in file_names:
-                total_bytes += (Path(root) / file_name).stat().st_size
+                total_bytes += path_stat(Path(root) / file_name).st_size
     return total_bytes, max(1, total_items)
 
 
@@ -443,8 +498,8 @@ def preflight_access_check(sources: list[Path], destination: Path) -> None:
 
     for source in sources:
         try:
-            source.stat()
-            if source.is_file():
+            path_stat(source)
+            if os.path.isfile(windows_long_path(source)):
                 assert_readable_file(source)
         except PermissionError:
             raise
@@ -463,10 +518,10 @@ def format_bytes(value: int) -> str:
 
 def config_stats(sources: list[str], destination: str, zip_backup: bool) -> tuple[int, int, int, str | None]:
     paths = [Path(source) for source in sources]
-    missing = [str(path) for path in paths if not path.exists()]
+    missing = [str(path) for path in paths if not path_exists(path)]
     if missing:
         return 0, 0, 0, f"Thieu nguon: {missing[0]}"
-    if destination and Path(destination).is_dir():
+    if destination and path_exists(Path(destination)) and os.path.isdir(windows_long_path(Path(destination))):
         try:
             preflight_access_check(paths, Path(destination))
         except Exception as exc:
@@ -475,11 +530,11 @@ def config_stats(sources: list[str], destination: str, zip_backup: bool) -> tupl
         files = []
         for path in paths:
             files.extend(source_files(path))
-        total_bytes = sum(item.stat().st_size for item in files)
+        total_bytes = sum(path_stat(item).st_size for item in files)
     except Exception as exc:
         return 0, 0, 0, f"Khong doc duoc nguon: {exc}"
     required = total_bytes * (2 if zip_backup else 1) + max(512 * 1024 * 1024, int(total_bytes * 0.1))
-    if destination and Path(destination).is_dir():
+    if destination and path_exists(Path(destination)) and os.path.isdir(windows_long_path(Path(destination))):
         free_bytes = shutil.disk_usage(destination).free
     else:
         free_bytes = 0
@@ -488,22 +543,22 @@ def config_stats(sources: list[str], destination: str, zip_backup: bool) -> tupl
 
 def quick_config_stats(sources: list[str], destination: str) -> tuple[int, int, str | None]:
     paths = [Path(source) for source in sources]
-    missing = [str(path) for path in paths if not path.exists()]
+    missing = [str(path) for path in paths if not path_exists(path)]
     if missing:
         return 0, 0, f"Thieu nguon: {missing[0]}"
     count = len(paths)
     try:
-        free_bytes = shutil.disk_usage(destination).free if destination and Path(destination).is_dir() else 0
+        free_bytes = shutil.disk_usage(destination).free if destination and path_exists(Path(destination)) and os.path.isdir(windows_long_path(Path(destination))) else 0
     except Exception:
         free_bytes = 0
     return count, free_bytes, None
 
 
 def verify_file_pair(source: Path, target: Path) -> dict:
-    if not target.exists():
+    if not path_exists(target):
         raise RuntimeError(f"Verify failed, target missing: {target}")
-    source_stat = source.stat()
-    target_stat = target.stat()
+    source_stat = path_stat(source)
+    target_stat = path_stat(target)
     if source_stat.st_size != target_stat.st_size:
         raise RuntimeError(f"Verify failed, size mismatch: {source} -> {target}")
     source_hash = sha256_file(source)
@@ -521,7 +576,7 @@ def verify_file_pair(source: Path, target: Path) -> dict:
 
 
 def verify_dir_pair(source: Path, target: Path) -> dict:
-    if not target.exists() or not target.is_dir():
+    if not path_exists(target) or not os.path.isdir(windows_long_path(target)):
         raise RuntimeError(f"Verify failed, directory missing: {source} -> {target}")
     return {
         "type": "directory",
@@ -529,7 +584,7 @@ def verify_dir_pair(source: Path, target: Path) -> dict:
         "path": str(target),
         "size": 0,
         "sha256": None,
-        "modified": datetime.fromtimestamp(target.stat().st_mtime).isoformat(timespec="seconds"),
+        "modified": datetime.fromtimestamp(path_stat(target).st_mtime).isoformat(timespec="seconds"),
     }
 
 
@@ -573,9 +628,9 @@ def copy_source(source: Path, target_root: Path, progress_callback=None, progres
         if progress_callback:
             progress_callback(progress_state["done"], progress_state["total"], message)
 
-    if source.is_file():
+    if os.path.isfile(windows_long_path(source)):
         try:
-            shutil.copy2(source, target)
+            shutil.copy2(windows_long_path(source), windows_long_path(target))
             entries.append(verify_file_pair(source, target))
         except PermissionError as exc:
             raise PermissionError(explain_access_error(source, exc)) from exc
@@ -585,21 +640,18 @@ def copy_source(source: Path, target_root: Path, progress_callback=None, progres
         log(f"OK file verified: {source} -> {target}")
         return target, entries
 
-    target.mkdir(parents=True, exist_ok=False)
+    os.makedirs(windows_long_path(target), exist_ok=False)
     entries.append(verify_dir_pair(source, target))
     tick(source.name)
-    for root, dir_names, file_names in os.walk(source):
-        dir_names.sort()
-        file_names.sort()
-        root_path = Path(root)
+    for root_path, dir_names, file_names in filtered_walk(source):
         relative_root = Path("") if root_path == source else root_path.relative_to(source)
         target_root_dir = target / relative_root
         for dir_name in dir_names:
             source_dir = root_path / dir_name
             target_dir = target_root_dir / dir_name
             try:
-                target_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copystat(source_dir, target_dir, follow_symlinks=False)
+                os.makedirs(windows_long_path(target_dir), exist_ok=True)
+                shutil.copystat(windows_long_path(source_dir), windows_long_path(target_dir), follow_symlinks=False)
                 entries.append(verify_dir_pair(source_dir, target_dir))
             except PermissionError as exc:
                 raise PermissionError(explain_access_error(source_dir, exc)) from exc
@@ -610,7 +662,7 @@ def copy_source(source: Path, target_root: Path, progress_callback=None, progres
             source_file = root_path / file_name
             target_file = target_root_dir / file_name
             try:
-                shutil.copy2(source_file, target_file)
+                shutil.copy2(windows_long_path(source_file), windows_long_path(target_file))
                 entries.append(verify_file_pair(source_file, target_file))
             except PermissionError as exc:
                 raise PermissionError(explain_access_error(source_file, exc)) from exc
@@ -624,20 +676,22 @@ def copy_source(source: Path, target_root: Path, progress_callback=None, progres
 def zip_folder(folder: Path, final_name: str) -> Path:
     zip_path = unique_path(folder.parent / f"{final_name}.zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for item in folder.rglob("*"):
-            try:
-                archive.write(item, Path(final_name) / item.relative_to(folder))
-            except PermissionError as exc:
-                raise PermissionError(explain_access_error(item, exc)) from exc
-            except OSError as exc:
-                raise OSError(f"Không nén được file/folder: {item}. Chi tiết: {exc}") from exc
+        for root, dir_names, file_names in filtered_walk(folder):
+            items = [root / name for name in dir_names] + [root / name for name in file_names]
+            for item in items:
+                try:
+                    archive.write(windows_long_path(item), Path(final_name) / item.relative_to(folder))
+                except PermissionError as exc:
+                    raise PermissionError(explain_access_error(item, exc)) from exc
+                except OSError as exc:
+                    raise OSError(f"Không nén được file/folder: {item}. Chi tiết: {exc}") from exc
     with zipfile.ZipFile(zip_path, "r") as archive:
         bad_file = archive.testzip()
         if bad_file:
             raise RuntimeError(f"ZIP verify failed: {bad_file}")
         if f"{final_name}/backup_manifest.json" not in archive.namelist():
             raise RuntimeError("ZIP verify failed: backup_manifest.json missing")
-    shutil.rmtree(folder)
+    shutil.rmtree(windows_long_path(folder))
     log(f"ZIP verified: {zip_path}")
     return zip_path
 
@@ -645,15 +699,15 @@ def zip_folder(folder: Path, final_name: str) -> Path:
 def cleanup_old_backups(destination: Path, keep_latest: int) -> None:
     backups = sorted(
         [item for item in destination.iterdir() if item.name.startswith("backup_") and not item.name.endswith("_FAILED")],
-        key=lambda item: item.stat().st_mtime,
+        key=lambda item: path_stat(item).st_mtime,
         reverse=True,
     )
     for old in backups[keep_latest:]:
         try:
             if old.is_dir():
-                shutil.rmtree(old)
+                shutil.rmtree(windows_long_path(old))
             else:
-                old.unlink()
+                os.unlink(windows_long_path(old))
             log(f"CLEAN: {old}")
         except Exception as exc:
             log(f"CLEAN ERROR: {old} -> {exc}")
@@ -672,16 +726,17 @@ def write_manifest(backup_dir: Path, config: BackupConfig, entries: list[dict], 
         "total_bytes": total_bytes,
         "entries": entries,
     }
-    (backup_dir / "backup_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    with open(windows_long_path(backup_dir / "backup_manifest.json"), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(manifest, ensure_ascii=False, indent=2))
     log(f"MANIFEST: {file_count} files, {directory_count} directories, {total_bytes} bytes")
 
 
 def fail_backup(temp_dir: Path, final_name: str) -> None:
-    if not temp_dir.exists():
+    if not path_exists(temp_dir):
         return
     failed_dir = unique_path(temp_dir.parent / f"{final_name}_FAILED")
     try:
-        temp_dir.rename(failed_dir)
+        os.replace(windows_long_path(temp_dir), windows_long_path(failed_dir))
         log(f"FAILED COPY KEPT: {failed_dir}")
     except Exception as exc:
         log(f"FAILED COPY RENAME ERROR: {exc}")
@@ -694,14 +749,14 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
     config = load_config(config_path)
     destination = Path(config.destination)
     sources = [Path(source) for source in config.sources]
-    if not destination.is_dir():
+    if not path_exists(destination) or not os.path.isdir(windows_long_path(destination)):
         log(f"ERROR: Noi luu khong hop le {destination}")
         return 1
     if not sources:
         log("ERROR: Chua co file/folder can backup")
         return 1
 
-    missing_sources = [str(source) for source in sources if not source.exists()]
+    missing_sources = [str(source) for source in sources if not path_exists(source)]
     if missing_sources:
         for source in missing_sources:
             log(f"ERROR: Nguon backup khong ton tai: {source}")
@@ -732,7 +787,7 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
 
     final_name = datetime.now().strftime("backup_%Y-%m-%d_%H-%M-%S")
     backup_dir = unique_path(destination / f".{final_name}.in_progress")
-    backup_dir.mkdir(parents=True, exist_ok=False)
+    os.makedirs(windows_long_path(backup_dir), exist_ok=False)
     log(f"START: Backup vao {backup_dir}")
 
     manifest_entries = []
@@ -755,7 +810,7 @@ def run_backup(config_path: Path = CONFIG_PATH, progress_callback=None) -> int:
             if progress_callback:
                 progress_callback(total_items, total_items, "Đang hoàn tất...")
             final_dir = unique_path(destination / final_name)
-            backup_dir.rename(final_dir)
+            os.replace(windows_long_path(backup_dir), windows_long_path(final_dir))
             log(f"FOLDER verified: {final_dir}")
     except Exception as exc:
         log(f"ERROR: Backup failed -> {exc}")
@@ -1666,7 +1721,15 @@ class BackupToolApp(ctk.CTk):
         label = WEEKDAY_LABELS.get(self.weekday.get(), WEEKDAY_LABELS["MON"])
         if self.weekday_choice.get() != label:
             self.weekday_choice.set(label)
-        self.sync_weekday_checks()
+        if frequency == "daily":
+            self.syncing_weekdays = True
+            try:
+                for var in self.weekday_vars.values():
+                    var.set(False)
+            finally:
+                self.syncing_weekdays = False
+        else:
+            self.sync_weekday_checks()
         state = "normal" if frequency == "weekly" else "disabled"
         self.weekday_menu.configure(state=state)
         custom_state = "normal" if frequency == "custom" else "disabled"
@@ -1748,13 +1811,14 @@ class BackupToolApp(ctk.CTk):
             keep_latest = max(1, int(self.keep_latest.get() or 1))
         except Exception:
             keep_latest = 10
+        stored_weekdays = selected_days if self.frequency.get() != "daily" else []
         return BackupConfig(
             sources=list(self.config_data.sources),
             destination=destination,
             frequency=self.frequency.get(),
             time=clean_time,
             weekday=self.weekday.get() or "MON",
-            weekdays=selected_days or [self.weekday.get() or "MON"],
+            weekdays=stored_weekdays,
             zip_backup=bool(self.zip_backup.get()),
             keep_latest=keep_latest,
             language=self.language.get(),

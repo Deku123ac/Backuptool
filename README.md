@@ -28,6 +28,10 @@ Gói hiện tại là bản source-safe không đóng gói EXE để giảm cả
 
 Khi backup, app copy từng file và cập nhật phần trăm liên tục. Giao diện chỉ hiển thị thống kê nhẹ; quét sâu chỉ chạy khi bấm `Kiểm tra`, `Backup ngay`, hoặc `Cài lịch`.
 
+Để tránh lỗi đường dẫn quá dài như `.venv\Lib\site-packages\...\__pycache__`, app tự bỏ qua các folder kỹ thuật/cache: `.venv`, `venv`, `__pycache__`, `.git`, `node_modules`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`.
+
+Lịch `Mỗi ngày` không dùng checkbox ngày. Checkbox ngày chỉ dùng cho chế độ `Tùy chọn ngày`.
+
 ## Các nút trong app
 
 - `Kiểm tra`: kiểm tra cấu hình trước khi chạy, gồm dữ liệu nguồn có tồn tại không, nơi lưu có hợp lệ không, quyền đọc/ghi và dung lượng còn đủ không.
